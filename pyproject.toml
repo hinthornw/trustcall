@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "trustcall"
+version = "0.0.1"
+description = "Tenacious & trustworthy tool calling built on LangGraph."
+authors = ["William Fu-Hinthorn <13333726+hinthornw@users.noreply.github.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+langgraph = "^0.1.1"
+dydantic = "^0.0.6"
+jsonpatch = "^1.33"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.4.10"
+mypy = "^1.10.1"
+pytest-asyncio = "^0.23.7"
+pytest = "^8.2.2"
+pytest-socket = "^0.7.0"
+pytest-xdist = "^3.6.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 80
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
