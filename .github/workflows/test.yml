@@ -1,0 +1,53 @@
+name: Python CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "python/**"
+  pull_request:
+    paths:
+      - "python/**"
+  workflow_dispatch:
+
+env:
+  POETRY_VERSION: "1.4.2"
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v5
+        name: Setup python ${{ matrix.python-version }}
+        id: setup-python
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - name: Install poetry
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        # Install poetry using the python version installed by setup-python step.
+        run: pipx install "poetry==$POETRY_VERSION" --python '${{ steps.setup-python.outputs.python-path }}' --verbose
+      - name: Install dependencies
+        run: |
+          poetry install --with dev
+      - name: Build ${{ matrix.python-version }}
+        run: poetry build
+      - name: Lint ${{ matrix.python-version }}
+        run: make lint
+      - name: Run Unit tests ${{ matrix.python-version }}
+        run: make tests
+        shell: bash

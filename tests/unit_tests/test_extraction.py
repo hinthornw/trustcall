@@ -1,0 +1,340 @@
+from typing import Any, Callable, Dict, List, Literal, Optional
+import uuid
+
+import pytest
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForLLMRun,
+    CallbackManagerForLLMRun,
+)
+from langchain_core.language_models import SimpleChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.pydantic_v1 import BaseModel
+from langchain_core.tools import BaseTool, tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from trustcall._base import (
+    PatchFunctionParameters,
+    create_extractor,
+    ensure_tools,
+)
+
+
+class FakeExtractionModel(SimpleChatModel):
+    """Fake Chat Model wrapper for testing purposes."""
+
+    responses: List[AIMessage] = []
+    backup_responses: List[AIMessage] = []
+    i: int = 0
+    bound_count: int = 0
+    tools: list = []
+
+    def _call(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> str:
+        return "fake response"
+
+    async def _agenerate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        message = self.responses[self.i % len(self.responses)]
+        self.i += 1
+        generation = ChatGeneration(message=message)
+        return ChatResult(generations=[generation])
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat-model"
+
+    @property
+    def _identifying_params(self) -> Dict[str, Any]:
+        return {"key": "fake"}
+
+    def bind_tools(self, tools: list, **kwargs: Any) -> "FakeExtractionModel":
+        """Bind tools to the model."""
+        tools = [convert_to_openai_tool(t) for t in tools]
+        responses = self.responses if self.bound_count == 0 else self.backup_responses
+        backup_responses = self.backup_responses if self.bound_count == 0 else []
+        self.bound_count += 1
+        return FakeExtractionModel(
+            responses=responses,
+            backup_responses=backup_responses,
+            tools=tools,
+            i=self.i,
+            **kwargs,
+        )
+
+
+class MyNestedSchema(BaseModel):
+    """Nested schema for testing."""
+
+    field1: str
+    """Field 1."""
+    some_int: int
+    """Some integer."""
+    some_float: float
+
+
+def my_cool_tool(arg1: str, arg2: MyNestedSchema) -> None:
+    """This is a cool tool."""
+    pass
+
+
+def _get_tool_as(style: Literal["fn", "tool", "schema", "model"]) -> Any:
+    """Coerce a string to a function, tool, schema, or model."""
+    tool_: BaseTool = tool(my_cool_tool)
+    match style:
+        case "fn":
+            return my_cool_tool
+        case "tool":
+            return tool_
+        case "schema":
+            return tool_.args_schema.schema()
+        case "model":
+            return tool_.args_schema
+        case _:
+            raise ValueError(f"Invalid style: {style}")
+
+
+def _get_tool_name(style: Literal["fn", "tool", "schema", "model"]) -> str:
+    """Get the name of the tool."""
+    tool_ = ensure_tools([_get_tool_as(style if style != "fn" else "tool")])[0]
+    return FakeExtractionModel().bind_tools([tool_]).tools[0]["function"]["name"]
+
+
+@pytest.fixture
+def expected() -> dict:
+    return {
+        "arg1": "This is a string.",
+        "arg2": {
+            "field1": "This is another string.",
+            "some_int": 42,
+            "some_float": 3.14,
+        },
+    }
+
+
+@pytest.fixture
+def initial() -> dict:
+    return {
+        "arg1": "This is a string.",
+        "arg2": {
+            "field1": "This is another string.",
+            "some_int": "not fourty two",
+            "some_float": 3.14,
+        },
+    }
+
+
+def good_patch(tc_id: str) -> dict:
+    return {
+        "schema_id": tc_id,
+        "reasoning": "because i said so.",
+        "patches": [
+            {"op": "replace", "path": "/arg2/some_int", "value": 42},
+            {"op": "replace", "path": "/arg2/some_float", "value": 3.14},
+        ],
+    }
+
+
+def bad_patch(tc_id: str) -> dict:
+    return {
+        "schema_id": tc_id,
+        "reasoning": "because i said so.",
+        "patches": [
+            {"op": "replace", "path": "/arg2/some_int", "value": 42},
+            {"op": "replace", "path": "/arg2/some_float", "value": "not a float"},
+        ],
+    }
+
+
+def patch_2(tc_id: str) -> dict:
+    return {
+        "schema_id": tc_id,
+        "reasoning": "because i said so.",
+        "patches": [
+            {"op": "replace", "path": "/arg2/some_float", "value": 3.14},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "fn",
+        "tool",
+        "schema",
+        "model",
+    ],
+)
+@pytest.mark.parametrize(
+    "patches",
+    [
+        [],
+        [good_patch],
+        [bad_patch, patch_2],
+    ],
+)
+async def test_extraction_with_retries(
+    style: str,
+    expected: dict,
+    patches: List[Callable[[str], dict]],
+    initial: dict,
+) -> None:
+    tc_id = f"tool_{uuid.uuid4()}"
+    tool_name = _get_tool_name(style)
+
+    initial_msg = AIMessage(
+        content="This is really cool ha.",
+        tool_calls=[
+            {"id": tc_id, "name": tool_name, "args": initial if patches else expected}
+        ],
+    )
+    patch_messages = []
+    for patch in patches:
+        patch_msg = AIMessage(
+            content="This is even more cool.",
+            tool_calls=[
+                {
+                    "id": f"tool_{uuid.uuid4()}",
+                    "name": PatchFunctionParameters.__name__,
+                    "args": patch(tc_id),
+                }
+            ],
+        )
+        patch_messages.append(patch_msg)
+    model = FakeExtractionModel(
+        responses=[initial_msg], backup_responses=patch_messages
+    )
+    graph = create_extractor(model, tools=[_get_tool_as(style)])
+    res = await graph.ainvoke(
+        {
+            "messages": [
+                ("system", "You are a botly bot."),
+                ("user", "I am a user with needs."),
+            ],
+        }
+    )
+    assert len(res["messages"]) == 1
+
+    msg = res["messages"][0]
+    assert msg.content == initial_msg.content
+    assert len(msg.tool_calls) == 1
+    assert msg.tool_calls[0]["id"] == tc_id
+    assert msg.tool_calls[0]["name"] == tool_name
+    assert msg.tool_calls[0]["args"] == expected
+    tool_: BaseTool = tool(my_cool_tool)
+    assert len(res["responses"]) == 1
+    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()
+
+
+def empty_patch(tc_id: str) -> dict:
+    return {
+        "schema_id": tc_id,
+        "reasoning": "because i said so.",
+        "patches": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "fn",
+        "tool",
+        "schema",
+        "model",
+    ],
+)
+@pytest.mark.parametrize(
+    "is_valid,existing",
+    [
+        (
+            True,
+            {
+                "arg1": "This is a string.",
+                "arg2": {
+                    "field1": "This is another string.",
+                    "some_int": 42,
+                    "some_float": 3.14,
+                },
+            },
+        ),
+        (
+            False,
+            {
+                "arg1": "This is a string.",
+                "arg2": {
+                    "field1": "This is another string.",
+                    "some_int": 42,
+                    # Test that it's OK even if the initial value is incorrect.
+                    "some_float": "This isn't actually correct!",
+                },
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "patches",
+    [
+        [empty_patch],
+        [good_patch],
+        [bad_patch, patch_2],
+        [bad_patch, empty_patch, patch_2],
+    ],
+)
+async def test_patch_existing(
+    style: str,
+    is_valid: bool,
+    existing: dict,
+    patches: List[Callable[[str], dict]],
+    expected: dict,
+) -> None:
+    if not is_valid and len(patches) == 1 and patches[0] == empty_patch:
+        pytest.skip("No patches to test with invalid initial.")
+    tool_name = _get_tool_name(style)
+    patch_messages = []
+    tc_id = f"tool_{uuid.uuid4()}"
+    for i, patch in enumerate(patches):
+        schema_id = tool_name if i == 0 else tc_id
+        patch_msg = AIMessage(
+            content="This is even more cool.",
+            tool_calls=[
+                {
+                    "id": tc_id if i == 0 else f"tool_{uuid.uuid4()}",
+                    "name": PatchFunctionParameters.__name__,
+                    "args": patch(schema_id),
+                }
+            ],
+        )
+        patch_messages.append(patch_msg)
+
+    model = FakeExtractionModel(
+        backup_responses=patch_messages,
+    )
+    graph = create_extractor(model, tools=[_get_tool_as(style)])
+    res = await graph.ainvoke(
+        {
+            "messages": [
+                ("system", "You are a botly bot."),
+            ],
+            "existing": {tool_name: existing},
+        }
+    )
+
+    assert len(res["messages"]) == 1
+    msg = res["messages"][0]
+    assert msg.content == "This is even more cool."
+    assert len(msg.tool_calls) == 1
+    assert msg.tool_calls[0]["id"] == tc_id
+    assert msg.tool_calls[0]["name"] == tool_name
+    assert msg.tool_calls[0]["args"] == expected
+    tool_: BaseTool = tool(my_cool_tool)
+    assert len(res["responses"]) == 1
+    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()
