@@ -1,5 +1,5 @@
-from typing import Any, Callable, Dict, List, Optional
 import uuid
+from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 from langchain_core.callbacks import (
@@ -12,6 +12,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.pydantic_v1 import BaseModel
 from langchain_core.tools import BaseTool, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+
 from trustcall._base import (
     PatchFunctionParameters,
     create_extractor,
@@ -62,10 +63,10 @@ class FakeExtractionModel(SimpleChatModel):
         tools = [convert_to_openai_tool(t) for t in tools]
         responses = (
             self.responses
-            if self.bound_count == 0
+            if self.bound_count <= 0
             else self.backup_responses[self.bound_count - 1 :]
         )
-        backup_responses = self.backup_responses if self.bound_count == 0 else []
+        backup_responses = self.backup_responses if self.bound_count <= 0 else []
         self.bound_count += 1
         return FakeExtractionModel(
             responses=responses,
@@ -215,7 +216,7 @@ async def test_extraction_with_retries(
         )
         patch_messages.append(patch_msg)
     model = FakeExtractionModel(
-        responses=[initial_msg], backup_responses=patch_messages
+        responses=[initial_msg], backup_responses=patch_messages, bound_count=-1
     )
     graph = create_extractor(model, tools=[_get_tool_as(style)])
     res = await graph.ainvoke(

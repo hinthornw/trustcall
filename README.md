@@ -1,6 +1,6 @@
 # trustcall
 
-Tenacious tool calling built on LangGraph.
+Tool calling & validated extraction you can trust, built on LangGraph.
 
 Uses [patch](https://datatracker.ietf.org/doc/html/rfc6902)-based extraction for:
 
@@ -151,3 +151,30 @@ res["messages"][-1].pretty_print()
 If you check out the [last call in that conversation](https://smith.langchain.com/public/b83d6db1-ffb9-4817-a166-bbc5004bbc25/r/5a05f73b-1d7e-47d4-9e40-0e8aaa3faa28), you can see that the agent initially generated an invalid tool call, but our validation was able to fix up the output before passing the payload on to our tools.
 
 These are just a couple examples to highlight what you can accomplish with `trustcall`.
+
+#### Explanation
+
+You can write this yourself (I wrote and tested this in a few hours, but I bet you're faster)!
+
+To reproduce the basic logic of the library, simply:
+
+1. Prompt the LLM to generate parameters for the schemas of zero or more tools.
+2. If any of these schemas raise validation errors, re-prompt the LLM to fix by generating a JSON Patch.
+
+The extractor also accepts a dictionary of **existing** schemas it can update (for situations where you have some structured
+representation of an object and you want to extend or update parts of it using new information.)
+
+The dictionary format is `**schema_name**: **current_schema**`.
+
+In this case, the logic is simpler:
+
+1. Prompt the LLM to generate one or more JSON Patches for any (or all) of the existing schemas.
+2. After applying the patches, if any of these schemas are invalid, re-prompt the LLM to fix using more patches.
+
+`trustcall` also uses + extends some convenient utilities to let you define schemas in several ways:
+
+1. Regular python functions (with typed arguments to apply the validation).
+2. Pydantic objects
+3. JSON schemas (we will still validate your calls using the schemas' typing and constraints).
+
+as well as providing support for `langchain-core`'s tools.
