@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Optional
 import uuid
 
 import pytest
@@ -57,10 +57,14 @@ class FakeExtractionModel(SimpleChatModel):
     def _identifying_params(self) -> Dict[str, Any]:
         return {"key": "fake"}
 
-    def bind_tools(self, tools: list, **kwargs: Any) -> "FakeExtractionModel":
+    def bind_tools(self, tools: list, **kwargs: Any) -> "FakeExtractionModel":  # type: ignore
         """Bind tools to the model."""
         tools = [convert_to_openai_tool(t) for t in tools]
-        responses = self.responses if self.bound_count == 0 else self.backup_responses
+        responses = (
+            self.responses
+            if self.bound_count == 0
+            else self.backup_responses[self.bound_count - 1 :]
+        )
         backup_responses = self.backup_responses if self.bound_count == 0 else []
         self.bound_count += 1
         return FakeExtractionModel(
@@ -87,25 +91,25 @@ def my_cool_tool(arg1: str, arg2: MyNestedSchema) -> None:
     pass
 
 
-def _get_tool_as(style: Literal["fn", "tool", "schema", "model"]) -> Any:
+def _get_tool_as(style: str) -> Any:
     """Coerce a string to a function, tool, schema, or model."""
-    tool_: BaseTool = tool(my_cool_tool)
+    tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     match style:
         case "fn":
             return my_cool_tool
         case "tool":
             return tool_
         case "schema":
-            return tool_.args_schema.schema()
+            return tool_.args_schema.schema()  # type: ignore
         case "model":
             return tool_.args_schema
         case _:
             raise ValueError(f"Invalid style: {style}")
 
 
-def _get_tool_name(style: Literal["fn", "tool", "schema", "model"]) -> str:
+def _get_tool_name(style: str) -> str:
     """Get the name of the tool."""
-    tool_ = ensure_tools([_get_tool_as(style if style != "fn" else "tool")])[0]
+    tool_ = ensure_tools([_get_tool_as(style)])[0]
     return FakeExtractionModel().bind_tools([tool_]).tools[0]["function"]["name"]
 
 
@@ -230,9 +234,9 @@ async def test_extraction_with_retries(
     assert msg.tool_calls[0]["id"] == tc_id
     assert msg.tool_calls[0]["name"] == tool_name
     assert msg.tool_calls[0]["args"] == expected
-    tool_: BaseTool = tool(my_cool_tool)
+    tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
-    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()
+    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()  # type: ignore
 
 
 def empty_patch(tc_id: str) -> dict:
@@ -310,6 +314,7 @@ async def test_patch_existing(
                     "id": tc_id if i == 0 else f"tool_{uuid.uuid4()}",
                     "name": PatchFunctionParameters.__name__,
                     "args": patch(schema_id),
+                    "SOME ARGUMENT": f"IDX: {i}",
                 }
             ],
         )
@@ -335,6 +340,6 @@ async def test_patch_existing(
     assert msg.tool_calls[0]["id"] == tc_id
     assert msg.tool_calls[0]["name"] == tool_name
     assert msg.tool_calls[0]["args"] == expected
-    tool_: BaseTool = tool(my_cool_tool)
+    tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
-    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()
+    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()  # type: ignore

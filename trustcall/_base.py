@@ -5,14 +5,26 @@ from __future__ import annotations
 import logging
 import operator
 import uuid
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Type,
+    Union,
+    cast,
+)
 
-import jsonpatch
+import jsonpatch  # type: ignore[import-untyped]
 import langsmith
 from dydantic import create_model_from_schema
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import create_schema_from_function
 from langchain_core.messages import (
+    BaseMessage,
     AIMessage,
     AnyMessage,
     SystemMessage,
@@ -24,9 +36,13 @@ from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool
 from langgraph.constants import Send
-from langgraph.graph import END, START, StateGraph, add_messages
+from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt import ValidationNode
 from typing_extensions import Annotated, TypedDict
+from langchain_core.messages import (
+    MessageLikeRepresentation,
+)
+
 
 logger = logging.getLogger("extraction")
 
@@ -34,10 +50,14 @@ logger = logging.getLogger("extraction")
 TOOL_T = Union[BaseTool, Type[BaseModel], Callable, Dict[str, Any]]
 DEFAULT_MAX_ATTEMPTS = 3
 
+Message = Union[MessageLikeRepresentation, MessageLikeRepresentation]
 
-class ExtractionInputs(TypedDict):
-    messages: Union[AnyMessage, List[AnyMessage], PromptValue]
-    existing: Optional[List[Dict[str, Any]]]
+Messages = Union[Message, Sequence[Message]]
+
+
+class ExtractionInputs(TypedDict, total=False):
+    messages: Union[Messages, PromptValue]
+    existing: Optional[Dict[str, Any]]
 
 
 class ExtractionOutputs(TypedDict):
@@ -72,9 +92,13 @@ def create_extractor(
     builder = StateGraph(ExtractionState)
 
     def format_exception(error: BaseException, call: ToolCall, schema: Type[BaseModel]):
+        if hasattr(schema, "model_json_schema"):
+            schema_ = schema.model_json_schema()
+        else:
+            schema_ = schema.schema()
         return (
             f"Error:\n\n```\n{repr(error)}\n```\n"
-            "Expected Parameter Schema:\n\n" + f"```json\n{schema.schema_json()}\n```\n"
+            "Expected Parameter Schema:\n\n" + f"```json\n{schema_}\n```\n"
             f"Please respond with a JSONPatch to correct the error for schema_id=[{call['id']}]."
         )
 
@@ -94,8 +118,8 @@ def create_extractor(
             tool_choice,
         ).as_runnable()
     )
-    builder.add_node(_Patch(llm).as_runnable())
     builder.add_node(_ExtractUpdates(llm).as_runnable())
+    builder.add_node(_Patch(llm).as_runnable())
     builder.add_node("validate", validator)
 
     def enter(state: ExtractionState) -> Literal["extract", "extract_updates"]:
@@ -109,11 +133,11 @@ def create_extractor(
 
     def handle_retries(
         state: ExtractionState, config: RunnableConfig
-    ) -> Union[Literal["__end__"], List[Literal["patch"]]]:
+    ) -> Union[Literal["__end__"], list]:
         """After validation, decide whether to retry or end the process."""
         max_attempts = config["configurable"].get("max_attempts", DEFAULT_MAX_ATTEMPTS)
         if state["attempts"] >= max_attempts:
-            return END
+            return "__end__"
         # Only continue if we need to patch the tool call
         to_send = []
         for m in reversed(state["messages"]):
@@ -130,7 +154,7 @@ def create_extractor(
                     )
         return to_send
 
-    builder.add_conditional_edges("validate", handle_retries)
+    builder.add_conditional_edges("validate", RunnableLambda(handle_retries))
     builder.add_edge("patch", "validate")
     compiled = builder.compile()
 
@@ -138,14 +162,22 @@ def create_extractor(
         """Filter the state to only include the validated AIMessage + responses."""
         msg_id = state.get("msg_id")
         msg: Optional[AIMessage] = next(
-            (m for m in state["messages"] if m.id == msg_id), None
+            (
+                m
+                for m in state["messages"]
+                if m.id == msg_id and isinstance(m, AIMessage)
+            ),
+            None,
         )
         if not msg:
-            return ExtractionOutputs(messages=[], responses=[], errors=[])
+            return ExtractionOutputs(messages=[], responses=[])
         responses = []
         for tc in msg.tool_calls:
+            sch = validator.schemas_by_name[tc["name"]]
             responses.append(
-                validator.schemas_by_name[tc["name"]].parse_obj(tc["args"])
+                sch.model_validate(tc["args"])
+                if hasattr(sch, "model_validate")
+                else sch.parse_obj(tc["args"])
             )
 
         return {
@@ -159,7 +191,7 @@ def create_extractor(
 def ensure_tools(
     tools: Sequence[TOOL_T],
 ) -> List[Union[BaseTool, Type[BaseModel], Callable]]:
-    results = []
+    results: list = []
     for t in tools:
         if isinstance(t, dict):
             results.append(create_model_from_schema(t))
@@ -169,7 +201,7 @@ def ensure_tools(
             results.append(create_schema_from_function(t.__name__, t))
         else:
             raise ValueError(f"Invalid tool type: {type(t)}")
-    return results
+    return list(results)
 
 
 ## Helper functions + reducers
@@ -182,7 +214,7 @@ class _Extract:
         self.bound_llm = llm.bind_tools(tools, tool_choice=tool_choice)
 
     @langsmith.traceable
-    def _tear_down(self, msg: AIMessage) -> ExtractionState:
+    def _tear_down(self, msg: AIMessage) -> dict:
         if not msg.id:
             msg.id = str(uuid.uuid4())
         return {
@@ -191,13 +223,11 @@ class _Extract:
             "msg_id": msg.id,
         }
 
-    async def ainvoke(
-        self, state: ExtractionState, config: RunnableConfig
-    ) -> ExtractionState:
-        msg: AIMessage = await self.bound_llm.ainvoke(state["messages"], config)
-        return self._tear_down(msg)
+    async def ainvoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
+        msg = await self.bound_llm.ainvoke(state["messages"], config)
+        return self._tear_down(cast(AIMessage, msg))
 
-    def invoke(self, state: ExtractionState, config: RunnableConfig) -> ExtractionState:
+    def invoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         msg = self.bound_llm.invoke(state["messages"], config)
         return self._tear_down(msg)
 
@@ -221,10 +251,11 @@ class _ExtractUpdates:
         )
 
     @langsmith.traceable
-    @staticmethod
-    def _setup(state: ExtractionState):
+    def _setup(self, state: ExtractionState):
         messages = state["messages"]
         existing = state["existing"]
+        if not existing:
+            raise ValueError("No existing schemas provided.")
         existing_schemas = "\n".join(
             [f"<schema id={k}>\n{v}\n</schema>" for k, v in existing.items()]
         )
@@ -235,14 +266,18 @@ class _ExtractUpdates:
 """
         if isinstance(messages[0], SystemMessage):
             system_message = messages.pop(0)
-            system_message.content += "\n\n" + existing_msg
+            if isinstance(system_message.content, str):
+                system_message.content += "\n\n" + existing_msg
+            else:
+                system_message.content = cast(list, system_message.content) + [
+                    "\n\n" + existing_msg
+                ]
         else:
             system_message = SystemMessage(content=existing_msg)
         return [system_message] + messages, existing
 
     @langsmith.traceable
-    @staticmethod
-    def _teardown(msg: AIMessage, existing: Dict[str, Any]):
+    def _teardown(self, msg: AIMessage, existing: Dict[str, Any]):
         resolved_tool_calls = []
         for tc in msg.tool_calls:
             schema_id = tc["args"]["schema_id"]
@@ -275,13 +310,13 @@ class _ExtractUpdates:
         Returns a single AIMessage with the updated schema, as if
             the schema were extracted from scratch.
         """
-        messages, existing = self._setup(state, config)
-        msg: AIMessage = await self.fallback_llm.ainvoke(messages, config)
-        return self._teardown(msg, existing)
+        messages, existing = self._setup(state)
+        msg = await self.bound.ainvoke(messages, config)
+        return self._teardown(cast(AIMessage, msg), existing)
 
     def invoke(self, state: ExtractionState, config: RunnableConfig) -> ExtractionState:
-        messages, existing = self._setup(state, config)
-        msg = self.fallback_llm.invoke(messages, config)
+        messages, existing = self._setup(state)
+        msg = self.bound.invoke(messages, config)
         return self._teardown(msg, existing)
 
     def as_runnable(self):
@@ -300,7 +335,7 @@ class _Patch:
         )
 
     @langsmith.traceable
-    def _tear_down(self, msg: AIMessage, messages: List[AnyMessage]) -> ExtractionState:
+    def _tear_down(self, msg: AIMessage, messages: List[AnyMessage]) -> dict:
         if not msg.id:
             msg.id = str(uuid.uuid4())
         # We will directly update the messages in the state before validation.
@@ -310,9 +345,7 @@ class _Patch:
             "attempts": 1,
         }
 
-    async def ainvoke(
-        self, state: ExtractionState, config: RunnableConfig
-    ) -> ExtractionState:
+    async def ainvoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         """Generate a JSONPatch to correct the validation error and heal the tool call.
 
         Assumptions:
@@ -321,12 +354,12 @@ class _Patch:
             - The last ToolMessage contains the tool call to fix.
 
         """
-        msg: AIMessage = await self.bound.ainvoke(state["messages"], config)
+        msg = await self.bound.ainvoke(state["messages"], config)
         return self._tear_down(msg, state["messages"])
 
-    def invoke(self, state: ExtractionState, config: RunnableConfig) -> ExtractionState:
+    def invoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         msg = self.bound.invoke(state["messages"], config)
-        return self._tear_down(msg, state["messages"])
+        return self._tear_down(cast(AIMessage, msg), state["messages"])
 
     def as_runnable(self):
         return RunnableLambda(self.invoke, self.ainvoke, name="patch")
@@ -407,10 +440,11 @@ def _reduce_messages(
     right: Union[
         AnyMessage,
         List[Union[AnyMessage, MessageOp]],
+        List[BaseMessage],
         PromptValue,
         MessageOp,
     ],
-) -> List[AnyMessage]:
+) -> Messages:
     if not left:
         left = []
     if isinstance(right, PromptValue):
@@ -426,26 +460,22 @@ def _reduce_messages(
                 message_ops.append(r)
             else:
                 right_.append(r)
-        right = right_
-    messages = add_messages(left, right)
+        right = right_  # type: ignore[assignment]
+    messages = add_messages(left, right)  # type: ignore[arg-type]
     if message_ops:
         # Apply operations to the messages
         for message_op in message_ops:
             if message_op["op"] == "delete":
-                t = message_op["target"]
-                if isinstance(t, str):
-                    t = [t]
-                targets_ = set(t)
-                for m in messages:
-                    if m.id in targets_:
-                        messages.remove(m)
+                t = cast(str, message_op["target"])
+                messages = [m for m in messages if cast(str, getattr(m, "id")) != t]
             elif message_op["op"] == "update_tool_call":
-                t: ToolCall = message_op["target"]
+                targ = cast(ToolCall, message_op["target"])
                 for m in messages:
                     if isinstance(m, AIMessage):
                         old = m.tool_calls.copy()
                         m.tool_calls = [
-                            t if tc["id"] == t["id"] else tc for tc in m.tool_calls
+                            targ if tc["id"] == targ["id"] else tc
+                            for tc in m.tool_calls
                         ]
                         if not old == m.tool_calls:
                             break
@@ -458,7 +488,7 @@ def _reduce_messages(
 @langsmith.traceable
 def _get_message_op(messages: Sequence[AnyMessage], tool_call: dict) -> List[MessageOp]:
     target_id = tool_call["schema_id"]
-    msg_ops = []
+    msg_ops: List[MessageOp] = []
     for m in messages:
         if isinstance(m, AIMessage):
             for tc in m.tool_calls:
@@ -478,7 +508,7 @@ def _get_message_op(messages: Sequence[AnyMessage], tool_call: dict) -> List[Mes
                     )
         if isinstance(m, ToolMessage):
             if m.tool_call_id == target_id:
-                msg_ops.append({"op": "delete", "target": m.id})
+                msg_ops.append(MessageOp(op="delete", target=m.id or ""))
     return msg_ops
 
 
