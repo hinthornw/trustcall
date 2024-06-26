@@ -11,6 +11,7 @@ from typing import (
     Dict,
     List,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     Type,
@@ -210,7 +211,7 @@ def create_extractor(
         if hasattr(schema, "model_json_schema"):
             schema_ = schema.model_json_schema()
         else:
-            schema_ = schema.schema()
+            schema = schema.schema()  # type: ignore
         return (
             f"Error:\n\n```\n{repr(error)}\n```\n"
             "Expected Parameter Schema:\n\n" + f"```json\n{schema_}\n```\n"
@@ -226,15 +227,18 @@ def create_extractor(
     builder.add_node(
         _Extract(
             llm,
-            [
-                schema
-                for name, schema in validator.schemas_by_name.items()
-                if name != PatchFunctionParameters.__name__
-            ],
+            # [
+            #     schema
+            #     for name, schema in validator.schemas_by_name.items()
+            #     if name != PatchFunctionParameters.__name__
+            # ],
+            tools + [PatchFunctionParameters],
             tool_choice,
         ).as_runnable()
     )
-    builder.add_node(_ExtractUpdates(llm).as_runnable())
+    builder.add_node(
+        _ExtractUpdates(llm, tools=validator.schemas_by_name.copy()).as_runnable()
+    )
     builder.add_node(_Patch(llm).as_runnable())
     builder.add_node("validate", validator)
 
@@ -336,7 +340,24 @@ def ensure_tools(
     results: list = []
     for t in tools:
         if isinstance(t, dict):
-            results.append(create_model_from_schema(t))
+            if all(k in t for k in ("name", "description", "parameters")):
+                schema = create_model_from_schema(
+                    {"title": t["name"], **t["parameters"]}
+                )
+                schema.__doc__ = (getattr(schema, __doc__, "") or "") + (
+                    t.get("description") or ""
+                )
+                schema.__name__ = t["name"]
+                results.append(schema)
+            elif all(k in t for k in ("type", "function")):
+                # Already in openai format
+                resolved = ensure_tools([t["function"]])
+                results.extend(resolved)
+            else:
+                model = create_model_from_schema(t)
+                if not model.__doc__:
+                    model.__doc__ = t.get("description") or model.__name__
+                results.append(model)
         elif isinstance(t, (BaseTool, type)):
             results.append(t)
         elif callable(t):
@@ -351,9 +372,26 @@ def ensure_tools(
 
 class _Extract:
     def __init__(
-        self, llm: BaseChatModel, tools: list, tool_choice: Optional[str] = None
+        self,
+        llm: BaseChatModel,
+        tools: Sequence,
+        tool_choice: Optional[str] = None,
     ):
-        self.bound_llm = llm.bind_tools(tools, tool_choice=tool_choice)
+        self.bound_llm = llm.bind_tools(
+            # [
+            #     {
+            #         "type": "function",
+            #         "function": {
+            #             "name": t.__name__,
+            #             "description": t.__doc__,
+            #             "parameters": t.model_json_schema(),  # type: ignore
+            #         },
+            #     }
+            #     for t in tools
+            # ],
+            tools,
+            tool_choice=tool_choice,
+        )
 
     @langsmith.traceable
     def _tear_down(self, msg: AIMessage) -> dict:
@@ -388,8 +426,11 @@ class _ExtractUpdates:
     3. Easier for the LLM to generate.
     """
 
-    def __init__(self, llm: BaseChatModel):
+    def __init__(
+        self, llm: BaseChatModel, tools: Optional[Mapping[str, Type[BaseModel]]] = None
+    ):
         self.bound = llm.bind_tools([PatchFunctionParameters])
+        self.tools = tools
 
     @langsmith.traceable
     def _setup(self, state: ExtractionState):
@@ -397,11 +438,26 @@ class _ExtractUpdates:
         existing = state["existing"]
         if not existing:
             raise ValueError("No existing schemas provided.")
-        existing_schemas = "\n".join(
-            [f"<schema id={k}>\n{v}\n</schema>" for k, v in existing.items()]
-        )
+        schema_strings = []
+        for k, v in existing.items():
+            schema = self.tools.get(k) if self.tools else None
+            if not schema:
+                schema_str = ""
+                logger.warning(f"Schema {k} not be found for existing payload {v}")
+            else:
+                schema_json = schema.schema()
+                schema_str = f"""
+<json_schema>
+{schema_json}
+</json_schema>
+"""
+            schema_strings.append(
+                f"<schema id={k}>\n<instance>\n{v}\n</instance>{schema_str}</schema>"
+            )
 
-        existing_msg = f"""Generate a JSONPatch to update the existing schemas.
+        existing_schemas = "\n".join(schema_strings)
+
+        existing_msg = f"""Generate a JSONPatch to update the existing schema instances.
 
 {existing_schemas}
 """
@@ -602,9 +658,10 @@ def _get_history_for_tool_call(messages: List[AnyMessage], tool_call_id: str):
 
 
 def _apply_message_ops(
-    messages: List[AnyMessage], message_ops: Sequence[MessageOp]
+    messages: Sequence[AnyMessage], message_ops: Sequence[MessageOp]
 ) -> List[AnyMessage]:
     # Apply operations to the messages
+    messages = list(messages)
     for message_op in message_ops:
         if message_op["op"] == "delete":
             t = cast(str, message_op["target"])
