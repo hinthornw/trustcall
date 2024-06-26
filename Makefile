@@ -13,7 +13,7 @@ integration_tests_fast:
 	poetry run python -m pytest -n auto --durations=10 -v --cov=trustcall --cov-report=term-missing --cov-report=html --cov-config=.coveragerc tests/integration_tests
 
 evals:
-	poetry run python -m pytest -p no:asyncio  --max_asyncio_tasks 4 tests/evals
+	LANGCHAIN_TEST_CACHE=tests/evals/cassettes poetry run python -m pytest -p no:asyncio  --max-asyncio-tasks 4 tests/evals
 
 lint:
 	poetry run ruff check .
