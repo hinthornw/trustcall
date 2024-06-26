@@ -365,10 +365,20 @@ def ensure_tools(
 ## Helper functions + reducers
 
 
+def _exclude_none(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        k: v if not isinstance(v, dict) else _exclude_none(v)
+        for k, v in d.items()
+        if v is not None
+    }
+
+
 def _get_schema(model: Type[BaseModel]) -> dict:
     if hasattr(model, "model_json_schema"):
-        return model.model_json_schema()
-    return model.schema()  # type: ignore
+        schema = model.model_json_schema()
+    else:
+        schema = model.schema()  # type: ignore
+    return _exclude_none(schema)
 
 
 class _Extract:
