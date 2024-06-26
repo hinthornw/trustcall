@@ -1217,7 +1217,11 @@ academic_rubric = {
 )
 @pytest.mark.parametrize(
     "model_name",
-    ["gpt-4o", "claude-3.5-sonnet-", "accounts/fireworks/models/firefunction-v2"],
+    [
+        "gpt-4o",
+        "claude-3-5-sonnet-20240620",
+        "accounts/fireworks/models/firefunction-v2",
+    ],
 )
 async def test_extraction_updates(
     model_name: str, inputs: dict, tool_def: dict, expected: dict
