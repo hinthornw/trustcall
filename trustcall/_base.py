@@ -208,13 +208,9 @@ def create_extractor(
     builder = StateGraph(ExtractionState)
 
     def format_exception(error: BaseException, call: ToolCall, schema: Type[BaseModel]):
-        if hasattr(schema, "model_json_schema"):
-            schema_ = schema.model_json_schema()
-        else:
-            schema = schema.schema()  # type: ignore
         return (
             f"Error:\n\n```\n{repr(error)}\n```\n"
-            "Expected Parameter Schema:\n\n" + f"```json\n{schema_}\n```\n"
+            "Expected Parameter Schema:\n\n" + f"```json\n{ _get_schema(schema)}\n```\n"
             f"Please respond with a JSONPatch to correct the error"
             f" for schema_id=[{call['id']}]."
         )
@@ -227,12 +223,11 @@ def create_extractor(
     builder.add_node(
         _Extract(
             llm,
-            # [
-            #     schema
-            #     for name, schema in validator.schemas_by_name.items()
-            #     if name != PatchFunctionParameters.__name__
-            # ],
-            tools + [PatchFunctionParameters],
+            [
+                schema
+                for name, schema in validator.schemas_by_name.items()
+                if name != PatchFunctionParameters.__name__
+            ],
             tool_choice,
         ).as_runnable()
     )
@@ -370,6 +365,12 @@ def ensure_tools(
 ## Helper functions + reducers
 
 
+def _get_schema(model: Type[BaseModel]) -> dict:
+    if hasattr(model, "model_json_schema"):
+        return model.model_json_schema()
+    return model.schema()  # type: ignore
+
+
 class _Extract:
     def __init__(
         self,
@@ -378,18 +379,17 @@ class _Extract:
         tool_choice: Optional[str] = None,
     ):
         self.bound_llm = llm.bind_tools(
-            # [
-            #     {
-            #         "type": "function",
-            #         "function": {
-            #             "name": t.__name__,
-            #             "description": t.__doc__,
-            #             "parameters": t.model_json_schema(),  # type: ignore
-            #         },
-            #     }
-            #     for t in tools
-            # ],
-            tools,
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.__name__,
+                        "description": t.__doc__,
+                        "parameters": _get_schema(t),
+                    },
+                }
+                for t in tools
+            ],
             tool_choice=tool_choice,
         )
 
