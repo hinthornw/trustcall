@@ -450,7 +450,9 @@ class _ExtractUpdates:
     def __init__(
         self, llm: BaseChatModel, tools: Optional[Mapping[str, Type[BaseModel]]] = None
     ):
-        self.bound = llm.bind_tools([PatchFunctionParameters])
+        self.bound = llm.bind_tools(
+            [PatchFunctionParameters], tool_choice="PatchFunctionParameters"
+        )
         self.tools = tools
 
     @langsmith.traceable
