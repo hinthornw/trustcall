@@ -9,6 +9,7 @@ from langchain_core.callbacks import (
 from langchain_core.language_models import SimpleChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel
 from langchain_core.tools import BaseTool, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -187,11 +188,13 @@ def patch_2(tc_id: str) -> dict:
         [bad_patch, patch_2],
     ],
 )
+@pytest.mark.parametrize("input_format", ["list", "prompt_value", "state"])
 async def test_extraction_with_retries(
     style: str,
     expected: dict,
     patches: List[Callable[[str], dict]],
     initial: dict,
+    input_format: str,
 ) -> None:
     tc_id = f"tool_{uuid.uuid4()}"
     tool_name = _get_tool_name(style)
@@ -219,14 +222,20 @@ async def test_extraction_with_retries(
         responses=[initial_msg], backup_responses=patch_messages, bound_count=-1
     )
     graph = create_extractor(model, tools=[_get_tool_as(style)])
-    res = await graph.ainvoke(
-        {
-            "messages": [
-                ("system", "You are a botly bot."),
-                ("user", "I am a user with needs."),
-            ],
-        }
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a botly bot."),
+            ("user", "I am a user with needs."),
+        ]
     )
+    if input_format == "list":
+        inputs: Any = prompt.invoke({}).to_messages()
+    elif input_format == "prompt_value":
+        inputs = prompt.invoke({})
+    else:
+        inputs = {"messages": prompt.invoke({}).to_messages()}
+
+    res = await graph.ainvoke(inputs)
     assert len(res["messages"]) == 1
 
     msg = res["messages"][0]
