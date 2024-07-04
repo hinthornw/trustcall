@@ -63,6 +63,9 @@ class ExtractionInputs(TypedDict, total=False):
     existing: Optional[Dict[str, Any]]
 
 
+InputsLike = Union[ExtractionInputs, List[AnyMessage], PromptValue]
+
+
 class ExtractionOutputs(TypedDict):
     messages: List[AIMessage]
     responses: List[BaseModel]
@@ -73,7 +76,7 @@ def create_extractor(
     *,
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
-) -> Runnable[ExtractionInputs, ExtractionOutputs]:
+) -> Runnable[InputsLike, ExtractionOutputs]:
     """Create an extractor that generates validated structured outputs using an LLM.
 
     This function binds validators and retry logic to ensure the validity of
@@ -326,7 +329,15 @@ def create_extractor(
             "responses": responses,
         }
 
-    return compiled | filter_state
+    def coerce_inputs(state: InputsLike) -> Union[ExtractionInputs, dict]:
+        """Coerce inputs to the expected format."""
+        if isinstance(state, list):
+            return {"messages": state}
+        if isinstance(state, PromptValue):
+            return {"messages": state.to_messages()}
+        return cast(dict, state)
+
+    return coerce_inputs | compiled | filter_state
 
 
 def ensure_tools(
