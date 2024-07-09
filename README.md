@@ -178,3 +178,25 @@ In this case, the logic is simpler:
 3. JSON schemas (we will still validate your calls using the schemas' typing and constraints).
 
 as well as providing support for `langchain-core`'s tools.
+
+
+
+## Evaluating
+
+We have a simple evaluation benchmark in [test_evals.py](./tests/evals/test_evals.py).
+
+To run, first clone the dataset
+
+```python
+from langsmith import Client
+
+Client().clone_public_dataset("https://smith.langchain.com/public/0544c02f-9617-4095-bc15-3a9af1189819/d")
+```
+
+Then run the evals:
+
+```bash
+make evals
+```
+
+This requires some additional dependencies, as well as API keys for the models being compared.
