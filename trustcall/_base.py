@@ -313,7 +313,7 @@ def create_extractor(
 
     def validate_or_repatch(
         state: ExtractionState,
-    ) -> Literal["validate", "__end__"]:
+    ) -> Literal["validate", "patch"]:
         if state["messages"][-1].type == "ai":
             return "validate"
         return "patch"

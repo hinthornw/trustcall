@@ -1,6 +1,6 @@
 # ruff: noqa: E501
 from collections import defaultdict
-from typing import Optional, Sequence
+from typing import Optional, Sequence, cast
 
 import pytest
 from dydantic import create_model_from_schema
@@ -75,7 +75,7 @@ def score_run(run: Run, example: Example):
     results = []
     passed = True
     try:
-        predicted = run.outputs["messages"][0].tool_calls[0]["args"]
+        predicted = run.outputs["messages"][0].tool_calls[0]["args"]  # type: ignore[index]
         results.append(
             {
                 "key": "valid_output",
@@ -118,7 +118,7 @@ def score_run(run: Run, example: Example):
             }
         )
 
-    if expected := example.outputs.get("expected"):
+    if expected := (example.outputs or {}).get("expected"):
         try:
             for key, value in expected.items():
                 pred = predicted[key]
@@ -214,5 +214,5 @@ async def test_model(model_name: str):
     async for res in result:
         eval_results: EvaluationResults = res["evaluation_results"]
         for er in eval_results["results"]:
-            processor.update(er.key, er.score)
+            processor.update(er.key, cast(float, er.score))
     assert processor["pass"] > 0.99
