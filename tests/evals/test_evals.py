@@ -2,6 +2,7 @@
 from collections import defaultdict
 from typing import Optional, Sequence, cast
 
+import langsmith as ls
 import pytest
 from dydantic import create_model_from_schema
 from langchain.chat_models import init_chat_model
@@ -216,3 +217,14 @@ async def test_model(model_name: str):
         for er in eval_results["results"]:
             processor.update(er.key, cast(float, er.score))
     assert processor["pass"] > 0.99
+
+
+@ls.test
+async def test_simple() -> None:
+    def query_docs(query: str) -> str:
+        return "I am a document."
+
+    extractor = create_extractor(
+        init_chat_model("gpt-4o"), tools=[query_docs], tool_choice="query_docs"
+    )
+    extractor.invoke({"messages": [("user", "What are the docs about?")]})

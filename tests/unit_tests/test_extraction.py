@@ -116,7 +116,7 @@ def _get_tool_name(style: str) -> str:
     try:
         return FakeExtractionModel().bind_tools([tool_]).tools[0]["function"]["name"]
     except Exception:
-        return tool_.__name__
+        return getattr(tool_, "__name__", "my_cool_tool")
 
 
 @pytest.fixture
@@ -202,7 +202,6 @@ async def test_extraction_with_retries(
 ) -> None:
     tc_id = f"tool_{uuid.uuid4()}"
     tool_name = _get_tool_name(style)
-
     initial_msg = AIMessage(
         content="This is really cool ha.",
         tool_calls=[

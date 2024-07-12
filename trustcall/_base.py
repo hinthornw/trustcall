@@ -390,7 +390,7 @@ def ensure_tools(
         elif isinstance(t, (BaseTool, type)):
             results.append(t)
         elif callable(t):
-            results.append(csff_(t.__name__, t))
+            results.append(csff_(t))
         else:
             raise ValueError(f"Invalid tool type: {type(t)}")
     return list(results)
@@ -427,7 +427,7 @@ class _Extract:
                 {
                     "type": "function",
                     "function": {
-                        "name": t.__name__,
+                        "name": getattr(t, "name", t.__name__),
                         "description": t.__doc__,
                         "parameters": _get_schema(t),
                     },
@@ -896,8 +896,8 @@ def _infer_patch_message_ops(
     ]
 
 
-def csff_(model_name: str, function: Callable) -> Type[BaseModel]:
-    schema = create_schema_from_function(model_name, function)
+def csff_(function: Callable) -> Type[BaseModel]:
+    schema = create_schema_from_function(function.__name__, function)
     schema.__name__ = function.__name__
     return schema
 

@@ -862,29 +862,29 @@ tenacity = ">=8.1.0,<8.4.0 || >8.4.0,<9.0.0"
 
 [[package]]
 name = "langchain-anthropic"
-version = "0.1.19"
+version = "0.1.20"
 description = "An integration package connecting AnthropicMessages and LangChain"
 optional = false
 python-versions = "<4.0,>=3.8.1"
 files = [
-    {file = "langchain_anthropic-0.1.19-py3-none-any.whl", hash = "sha256:ed0d5823dcf65802c6367a8fada2e82610aa1c96dfaae5400b6920131483707b"},
-    {file = "langchain_anthropic-0.1.19.tar.gz", hash = "sha256:7f4b3834947bbefdc43f5dc4ebbaddac4b58253c0c54684ac960af5054acc341"},
+    {file = "langchain_anthropic-0.1.20-py3-none-any.whl", hash = "sha256:3a0d89ac6856be98beb3ec63813393bf29af3c5134247979c055938e741b7d9d"},
+    {file = "langchain_anthropic-0.1.20.tar.gz", hash = "sha256:cb9607fecfc0f0de49b79dd0fc066790e2877873ef753abd98d2ae38d6e0f5b2"},
 ]
 
 [package.dependencies]
 anthropic = ">=0.28.0,<1"
 defusedxml = ">=0.7.1,<0.8.0"
-langchain-core = ">=0.2.10,<0.3"
+langchain-core = ">=0.2.17,<0.3"
 
 [[package]]
 name = "langchain-core"
-version = "0.2.16"
+version = "0.2.17"
 description = "Building applications with LLMs through composability"
 optional = false
 python-versions = "<4.0,>=3.8.1"
 files = [
-    {file = "langchain_core-0.2.16-py3-none-any.whl", hash = "sha256:68dd6fbdd8d704e124ee14c39d0b0dcf38a47bb32234328b63ad2e98385b1c80"},
-    {file = "langchain_core-0.2.16.tar.gz", hash = "sha256:cc03083e059bff86ca3e6ba60097f91d7765a929edd04eb226bb20c208447caf"},
+    {file = "langchain_core-0.2.17-py3-none-any.whl", hash = "sha256:f8b4f64c95b381bd3ac4322bafa9ecee3ca3970aa0aa2829ef11175bcad27249"},
+    {file = "langchain_core-0.2.17.tar.gz", hash = "sha256:f9b8d0f7b5f339ac62e11c417181e87f54e9282af82d1a64c8a7427f3d5d9118"},
 ]
 
 [package.dependencies]
@@ -900,35 +900,35 @@ tenacity = ">=8.1.0,<8.4.0 || >8.4.0,<9.0.0"
 
 [[package]]
 name = "langchain-fireworks"
-version = "0.1.4"
+version = "0.1.5"
 description = "An integration package connecting Fireworks and LangChain"
 optional = false
 python-versions = "<4.0,>=3.8.1"
 files = [
-    {file = "langchain_fireworks-0.1.4-py3-none-any.whl", hash = "sha256:aab2edddea490a5931c556bfc0f2b8a07a18f57a25bf8c77b961b5e37001e75a"},
-    {file = "langchain_fireworks-0.1.4.tar.gz", hash = "sha256:550bec787b2660014d421e16ce6c4f51851067db14eb299f5757231517eb9d77"},
+    {file = "langchain_fireworks-0.1.5-py3-none-any.whl", hash = "sha256:ff44b35e305c979f84e276d8602db0d73903974b506dbe600009e9ac7b1cea13"},
+    {file = "langchain_fireworks-0.1.5.tar.gz", hash = "sha256:f51aafbbfa4c8b8281fac37926af4ce3cf0912f40a5c1840175fa32860e27c9a"},
 ]
 
 [package.dependencies]
 aiohttp = ">=3.9.1,<4.0.0"
 fireworks-ai = ">=0.13.0"
-langchain-core = ">=0.2.2,<0.3"
+langchain-core = ">=0.2.17,<0.3"
 openai = ">=1.10.0,<2.0.0"
 requests = ">=2,<3"
 
 [[package]]
 name = "langchain-openai"
-version = "0.1.15"
+version = "0.1.16"
 description = "An integration package connecting OpenAI and LangChain"
 optional = false
 python-versions = "<4.0,>=3.8.1"
 files = [
-    {file = "langchain_openai-0.1.15-py3-none-any.whl", hash = "sha256:7e3cd4c77ccb3a7d28743daaefeb0d34fc1665b03bdfe3f3db5d44894d10b92f"},
-    {file = "langchain_openai-0.1.15.tar.gz", hash = "sha256:016da6be25c1accdb0f7468868d3b294329ae97d73c2425c580656e9c30ad7be"},
+    {file = "langchain_openai-0.1.16-py3-none-any.whl", hash = "sha256:bff90e9d0be786495920a7851ae4d55247fb084d3a11d1b15bfe91904ce1cb0f"},
+    {file = "langchain_openai-0.1.16.tar.gz", hash = "sha256:3dedcc785a64a488ad6a313cc59b0dccea025d27413b55cec73a20dcf3ded4da"},
 ]
 
 [package.dependencies]
-langchain-core = ">=0.2.13,<0.3.0"
+langchain-core = ">=0.2.17,<0.3.0"
 openai = ">=1.32.0,<2.0.0"
 tiktoken = ">=0.7,<1"
 
