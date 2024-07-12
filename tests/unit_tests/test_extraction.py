@@ -113,7 +113,10 @@ def _get_tool_as(style: str) -> Any:
 def _get_tool_name(style: str) -> str:
     """Get the name of the tool."""
     tool_ = ensure_tools([_get_tool_as(style)])[0]
-    return FakeExtractionModel().bind_tools([tool_]).tools[0]["function"]["name"]
+    try:
+        return FakeExtractionModel().bind_tools([tool_]).tools[0]["function"]["name"]
+    except Exception:
+        return tool_.__name__
 
 
 @pytest.fixture
@@ -142,7 +145,7 @@ def initial() -> dict:
 
 def good_patch(tc_id: str) -> dict:
     return {
-        "schema_id": tc_id,
+        "json_doc_id": tc_id,
         "reasoning": "because i said so.",
         "patches": [
             {"op": "replace", "path": "/arg2/some_int", "value": 42},
@@ -153,7 +156,7 @@ def good_patch(tc_id: str) -> dict:
 
 def bad_patch(tc_id: str) -> dict:
     return {
-        "schema_id": tc_id,
+        "json_doc_id": tc_id,
         "reasoning": "because i said so.",
         "patches": [
             {"op": "replace", "path": "/arg2/some_int", "value": 42},
@@ -164,7 +167,7 @@ def bad_patch(tc_id: str) -> dict:
 
 def patch_2(tc_id: str) -> dict:
     return {
-        "schema_id": tc_id,
+        "json_doc_id": tc_id,
         "reasoning": "because i said so.",
         "patches": [
             {"op": "replace", "path": "/arg2/some_float", "value": 3.14},
@@ -252,7 +255,7 @@ async def test_extraction_with_retries(
 
 def empty_patch(tc_id: str) -> dict:
     return {
-        "schema_id": tc_id,
+        "json_doc_id": tc_id,
         "reasoning": "because i said so.",
         "patches": [],
     }
@@ -317,14 +320,14 @@ async def test_patch_existing(
     patch_messages = []
     tc_id = f"tool_{uuid.uuid4()}"
     for i, patch in enumerate(patches):
-        schema_id = tool_name if i == 0 else tc_id
+        json_doc_id = tool_name if i == 0 else tc_id
         patch_msg = AIMessage(
             content="This is even more cool.",
             tool_calls=[
                 {
                     "id": tc_id if i == 0 else f"tool_{uuid.uuid4()}",
                     "name": PatchDoc.__name__,
-                    "args": patch(schema_id),
+                    "args": patch(json_doc_id),
                     "SOME ARGUMENT": f"IDX: {i}",
                 }
             ],
