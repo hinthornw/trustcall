@@ -20,13 +20,14 @@ from typing import (
 )
 
 import jsonpatch  # type: ignore[import-untyped]
-import langsmith
+import langsmith as ls
 from dydantic import create_model_from_schema
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     BaseMessage,
+    HumanMessage,
     MessageLikeRepresentation,
     SystemMessage,
     ToolCall,
@@ -40,11 +41,12 @@ from langchain_core.pydantic_v1 import (
     StrictFloat,
     StrictInt,
 )
-from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, create_schema_from_function
 from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
-from langgraph.prebuilt import ValidationNode
+from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
+from langgraph.utils import RunnableCallable
 from typing_extensions import Annotated, TypedDict
 
 logger = logging.getLogger("extraction")
@@ -69,6 +71,7 @@ InputsLike = Union[ExtractionInputs, List[AnyMessage], PromptValue]
 class ExtractionOutputs(TypedDict):
     messages: List[AIMessage]
     responses: List[BaseModel]
+    attempts: int
 
 
 def create_extractor(
@@ -212,14 +215,14 @@ def create_extractor(
 
     def format_exception(error: BaseException, call: ToolCall, schema: Type[BaseModel]):
         return (
-            f"Error:\n\n```\n{repr(error)}\n```\n"
+            f"Error:\n\n```\n{str(error)}\n```\n"
             "Expected Parameter Schema:\n\n" + f"```json\n{ _get_schema(schema)}\n```\n"
-            f"Please respond with a JSONPatch to correct the error"
-            f" for schema_id=[{call['id']}]."
+            f"Please use PatchFunctionErrors to fix all validation errors."
+            f" for json_doc_id=[{call['id']}]."
         )
 
-    validator = ValidationNode(
-        ensure_tools(tools) + [PatchFunctionParameters],
+    validator = _ExtendedValidationNode(
+        ensure_tools(tools) + [PatchDoc, PatchFunctionErrors],
         format_error=format_exception,
     )
 
@@ -229,7 +232,7 @@ def create_extractor(
             [
                 schema
                 for name, schema in validator.schemas_by_name.items()
-                if name != PatchFunctionParameters.__name__
+                if name not in {PatchDoc.__name__, PatchFunctionErrors.__name__}
             ],
             tool_choice,
         ).as_runnable()
@@ -253,8 +256,16 @@ def create_extractor(
         return "extract"
 
     builder.add_conditional_edges(START, enter)
+
+    def validate_or_retry(
+        state: ExtractionState,
+    ) -> Literal["validate", "extract_updates"]:
+        if state["messages"][-1].type == "ai":
+            return "validate"
+        return "extract_updates"
+
     builder.add_edge("extract", "validate")
-    builder.add_edge("extract_updates", "validate")
+    builder.add_conditional_edges("extract_updates", validate_or_retry)
 
     def handle_retries(
         state: ExtractionState, config: RunnableConfig
@@ -299,7 +310,16 @@ def create_extractor(
         return to_send
 
     builder.add_conditional_edges("validate", handle_retries)
-    builder.add_edge("patch", "validate")
+
+    def validate_or_repatch(
+        state: ExtractionState,
+    ) -> Literal["validate", "__end__"]:
+        if state["messages"][-1].type == "ai":
+            return "validate"
+        return "patch"
+
+    # builder.add_edge("patch", "validate")  # validate_or_repatch)
+    builder.add_conditional_edges("patch", validate_or_repatch, ["validate", "__end__"])
     compiled = builder.compile()
 
     def filter_state(state: ExtractionState) -> ExtractionOutputs:
@@ -314,7 +334,9 @@ def create_extractor(
             None,
         )
         if not msg:
-            return ExtractionOutputs(messages=[], responses=[])
+            return ExtractionOutputs(
+                messages=[], responses=[], attempts=state["attempts"]
+            )
         responses = []
         for tc in msg.tool_calls:
             sch = validator.schemas_by_name[tc["name"]]
@@ -327,6 +349,7 @@ def create_extractor(
         return {
             "messages": [msg],
             "responses": responses,
+            "attempts": state["attempts"],
         }
 
     def coerce_inputs(state: InputsLike) -> Union[ExtractionInputs, dict]:
@@ -414,7 +437,7 @@ class _Extract:
             tool_choice=tool_choice,
         )
 
-    @langsmith.traceable
+    @ls.traceable
     def _tear_down(self, msg: AIMessage) -> dict:
         if not msg.id:
             msg.id = str(uuid.uuid4())
@@ -433,7 +456,7 @@ class _Extract:
         return self._tear_down(msg)
 
     def as_runnable(self):
-        return RunnableLambda(self.invoke, self.ainvoke, name="extract")
+        return RunnableCallable(self.invoke, self.ainvoke, name="extract", trace=False)
 
 
 class _ExtractUpdates:
@@ -450,12 +473,10 @@ class _ExtractUpdates:
     def __init__(
         self, llm: BaseChatModel, tools: Optional[Mapping[str, Type[BaseModel]]] = None
     ):
-        self.bound = llm.bind_tools(
-            [PatchFunctionParameters], tool_choice="PatchFunctionParameters"
-        )
+        self.bound = llm.bind_tools([PatchDoc], tool_choice=PatchDoc.__name__)
         self.tools = tools
 
-    @langsmith.traceable
+    @ls.traceable
     def _setup(self, state: ExtractionState):
         messages = state["messages"]
         existing = state["existing"]
@@ -496,19 +517,29 @@ class _ExtractUpdates:
             system_message = SystemMessage(content=existing_msg)
         return [system_message] + messages, existing
 
-    @langsmith.traceable
+    @ls.traceable
     def _teardown(self, msg: AIMessage, existing: Dict[str, Any]):
         resolved_tool_calls = []
+        rt = ls.get_current_run_tree()
         for tc in msg.tool_calls:
-            schema_id = tc["args"]["schema_id"]
-            if target := existing.get(schema_id):
-                resolved_tool_calls.append(
-                    ToolCall(
-                        id=tc["id"],
-                        name=schema_id,
-                        args=jsonpatch.apply_patch(target, tc["args"]["patches"]),
+            json_doc_id = tc["args"]["json_doc_id"]
+            if target := existing.get(json_doc_id):
+                try:
+                    resolved_tool_calls.append(
+                        ToolCall(
+                            id=tc["id"],
+                            name=json_doc_id,
+                            args=jsonpatch.apply_patch(target, tc["args"]["patches"]),
+                        )
                     )
-                )
+                except jsonpatch.JsonPatchConflict as e:
+                    logger.error(f"Could not apply patch: {e}")
+                    if rt:
+                        rt.error = f"Could not apply patch: {e}"
+            else:
+                if rt:
+                    rt.error = f"Could not find existing schema for {json_doc_id}"
+                logger.warning(f"Could not find existing schema for {json_doc_id}")
         ai_message = AIMessage(
             content=msg.content,
             tool_calls=resolved_tool_calls,
@@ -522,25 +553,47 @@ class _ExtractUpdates:
             "msg_id": ai_message.id,
         }
 
-    async def ainvoke(
-        self, state: ExtractionState, config: RunnableConfig
-    ) -> ExtractionState:
+    async def ainvoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         """Generate a JSONPatch to simply update an existing schema.
 
         Returns a single AIMessage with the updated schema, as if
             the schema were extracted from scratch.
         """
         messages, existing = self._setup(state)
-        msg = await self.bound.ainvoke(messages, config)
-        return self._teardown(cast(AIMessage, msg), existing)
+        try:
+            msg = await self.bound.ainvoke(messages, config)
+            return self._teardown(cast(AIMessage, msg), existing)
+        except Exception as e:
+            return {
+                "messages": [
+                    HumanMessage(
+                        content="Fix the validation error while"
+                        f" also avoiding: {repr(str(e))}"
+                    )
+                ],
+                "attempts": 1,
+            }
 
-    def invoke(self, state: ExtractionState, config: RunnableConfig) -> ExtractionState:
+    def invoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         messages, existing = self._setup(state)
-        msg = self.bound.invoke(messages, config)
-        return self._teardown(msg, existing)
+        try:
+            msg = self.bound.invoke(messages, config)
+            return self._teardown(msg, existing)
+        except Exception as e:
+            return {
+                "messages": [
+                    HumanMessage(
+                        content="Fix the validation error while"
+                        f" also avoiding: {repr(str(e))}"
+                    )
+                ],
+                "attempts": 1,
+            }
 
     def as_runnable(self):
-        return RunnableLambda(self.invoke, self.ainvoke, name="extract_updates")
+        return RunnableCallable(
+            self.invoke, self.ainvoke, name="extract_updates", trace=False
+        )
 
 
 class _Patch:
@@ -552,10 +605,10 @@ class _Patch:
 
     def __init__(self, llm: BaseChatModel):
         self.bound = llm.bind_tools(
-            [PatchFunctionParameters], tool_choice=PatchFunctionParameters.__name__
+            [PatchFunctionErrors], tool_choice=PatchFunctionErrors.__name__
         )
 
-    @langsmith.traceable
+    @ls.traceable(tags=["patch"])
     def _tear_down(self, msg: AIMessage, messages: List[AnyMessage], target_id: str):
         if not msg.id:
             msg.id = str(uuid.uuid4())
@@ -587,7 +640,7 @@ class _Patch:
         )
 
     def as_runnable(self):
-        return RunnableLambda(self.invoke, self.ainvoke, name="patch")
+        return RunnableCallable(self.invoke, self.ainvoke, name="patch", trace=False)
 
 
 # We COULD just say Any for the value below, but Fireworks and some other
@@ -602,13 +655,6 @@ class JsonPatch(BaseModel):
     """A JSON Patch document represents an operation to be performed on a JSON document.
 
     Note that the op and path are ALWAYS required. Value is required for ALL operations except 'remove'.
-
-    Examples:
-    ```json
-    {"op": "add", "path": "/a/b/c", "patch_value": 1}
-    {"op": "replace", "path": "/a/b/c", "patch_value": 2}
-    {"op": "remove", "path": "/a/b/c"}
-    ```
     """  # noqa
 
     op: Literal["add", "remove", "replace"] = Field(
@@ -624,31 +670,91 @@ class JsonPatch(BaseModel):
     value: Union[_JSON_TYPES, List[_JSON_TYPES], Dict[str, _JSON_TYPES]] = Field(
         ...,
         description="The value to be used within the operation. REQUIRED for"
-        " 'add', 'replace', and 'test' operations.",
+        " 'add', 'replace', and 'test' operations."
+        " Pay close attention to the json schema to ensure"
+        " patched document will be valid.",
     )
 
+    class Config:
+        schema_extra = {
+            "examples": [
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array",
+                    "patch_value": ["some", "values"],
+                },
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array/1",
+                    "patch_value": ["newer"],
+                },
+                {
+                    "op": "replace",
+                    "path": "/path/to/my_array/1",
+                    "patch_value": "even newer",
+                },
+                {
+                    "op": "remove",
+                    "path": "/path/to/my_array/1",
+                },
+                {
+                    "op": "replace",
+                    "path": "/path/to/broken_object",
+                    "patch_value": {"new": "object"},
+                },
+            ]
+        }
 
-class PatchFunctionParameters(BaseModel):
-    """Respond with all JSONPatch operations required to update the previous function call.
 
-    Use to correct all validation errors in non-compliant function calls,
-    or to extend or update existing structured data in the presence of new information.
+# Used for fixing validation errors
+class PatchFunctionErrors(BaseModel):
+    """Respond with all JSONPatch operations required to update the previous invalid function call.
+
+    Use to correct all validation errors in non-compliant function calls, or to extend or update existing structured data in the presence of new information. Closely analyze
+    the parameters from the original JSONSchema to ensure the patched document will be valid
+    and that you avoid repeating the same errors.
     """  # noqa
 
-    schema_id: str = Field(
+    json_doc_id: str = Field(
         ...,
         description="The ID of the function you are patching.",
     )
-    reasoning: str = Field(
+    planned_edits: str = Field(
         ...,
-        description="Think step-by-step, listing each validation error and the"
-        " JSONPatch operation needed to correct it. "
-        "Cite the fields in the JSONSchema you referenced in developing this plan.",
+        description="Write a bullet-point list of each ValidationError you encountered"
+        " and the corresponding JSONPatch operation needed to heal it."
+        " For each operation, write why your initial guess was incorrect, "
+        " citing the corresponding types(s) from the JSONSchema"
+        " that will be used the validate the resultant patched document."
+        "  Think step-by-step to ensure no error is overlooked.",
     )
     patches: list[JsonPatch] = Field(
         ...,
         description="A list of JSONPatch operations to be applied to the"
-        " previous tool call's response.",
+        " previous tool call's response. If none are required, return an empty list."
+        " This field is REQUIRED.",
+    )
+
+
+# Used for updating existing documents
+class PatchDoc(BaseModel):
+    """Respond with JSONPatch operations to update the existing JSON document based on the provided text and schema."""  # noqa
+
+    json_doc_id: str = Field(
+        ...,
+        description="The json_doc_id of the document you are patching.",
+    )
+    planned_edits: str = Field(
+        ...,
+        description="Think step-by-step, reasoning over each required"
+        " update and the corresponding JSONPatch operation to accomplish it."
+        " Cite the fields in the JSONSchema you referenced in developing this plan.",
+    )
+    patches: list[JsonPatch] = Field(
+        ...,
+        description="A list of JSONPatch operations to be applied to the"
+        " previous tool call's response. If none are required, return an empty list."
+        " This field is REQUIRED.",
     )
 
 
@@ -750,30 +856,36 @@ def _get_message_op(
     messages: Sequence[AnyMessage], tool_call: dict, target_id: str
 ) -> List[MessageOp]:
     msg_ops: List[MessageOp] = []
+    rt = ls.get_current_run_tree()
     for m in messages:
         if isinstance(m, AIMessage):
             for tc in m.tool_calls:
                 if tc["id"] == target_id:
-                    patched_args = jsonpatch.apply_patch(
-                        tc["args"], tool_call["patches"]
-                    )
-                    msg_ops.append(
-                        {
-                            "op": "update_tool_call",
-                            "target": {
-                                "id": target_id,
-                                "name": tc["name"],
-                                "args": patched_args,
-                            },
-                        }
-                    )
+                    try:
+                        patched_args = jsonpatch.apply_patch(
+                            tc["args"], tool_call["patches"]
+                        )
+                        msg_ops.append(
+                            {
+                                "op": "update_tool_call",
+                                "target": {
+                                    "id": target_id,
+                                    "name": tc["name"],
+                                    "args": patched_args,
+                                },
+                            }
+                        )
+                    except jsonpatch.JsonPatchConflict as e:
+                        if rt:
+                            rt.error = f"Could not apply patch: {e}"
+                        logger.error(f"Could not apply patch: {e}")
         if isinstance(m, ToolMessage):
             if m.tool_call_id == target_id:
                 msg_ops.append(MessageOp(op="delete", target=m.id or ""))
     return msg_ops
 
 
-@langsmith.traceable
+@ls.traceable
 def _infer_patch_message_ops(
     messages: Sequence[AnyMessage], tool_calls: List[ToolCall], target_id: str
 ):
@@ -800,6 +912,47 @@ class ExtendedExtractState(ExtractionState):
 
 class DeletionState(ExtractionState):
     deletion_target: str
+
+
+class _ExtendedValidationNode(ValidationNode):
+    def _func(
+        self, input: Union[list[AnyMessage], dict[str, Any]], config: RunnableConfig
+    ) -> Any:
+        """Validate and run tool calls synchronously."""
+        output_type, message = self._get_message(input)
+
+        def run_one(call: ToolCall):
+            try:
+                schema = self.schemas_by_name[call["name"]]
+                output = schema.validate(call["args"])
+                return ToolMessage(
+                    content=output.json(),
+                    name=call["name"],
+                    tool_call_id=cast(str, call["id"]),
+                )
+            except KeyError:
+                valid_names = ", ".join(self.schemas_by_name.keys())
+                return ToolMessage(
+                    content=f"Unrecognized tool name {call['name']}. Please"
+                    f" respond with one of the following: {valid_names}",
+                    name=call["name"],
+                    tool_call_id=cast(str, call["id"]),
+                    additional_kwargs={"is_error": True},
+                )
+            except Exception as e:
+                return ToolMessage(
+                    content=self._format_error(e, call, schema),
+                    name=call["name"],
+                    tool_call_id=cast(str, call["id"]),
+                    additional_kwargs={"is_error": True},
+                )
+
+        with get_executor_for_config(config) as executor:
+            outputs = [*executor.map(run_one, message.tool_calls)]
+            if output_type == "list":
+                return outputs
+            else:
+                return {"messages": outputs}
 
 
 __all__ = [

@@ -15,7 +15,8 @@ from langchain_core.tools import BaseTool, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from trustcall._base import (
-    PatchFunctionParameters,
+    PatchFunctionErrors,
+    PatchSchema,
     create_extractor,
     ensure_tools,
 )
@@ -212,7 +213,7 @@ async def test_extraction_with_retries(
             tool_calls=[
                 {
                     "id": f"tool_{uuid.uuid4()}",
-                    "name": PatchFunctionParameters.__name__,
+                    "name": PatchFunctionErrors.__name__,
                     "args": patch(tc_id),
                 }
             ],
@@ -322,7 +323,7 @@ async def test_patch_existing(
             tool_calls=[
                 {
                     "id": tc_id if i == 0 else f"tool_{uuid.uuid4()}",
-                    "name": PatchFunctionParameters.__name__,
+                    "name": PatchSchema.__name__,
                     "args": patch(schema_id),
                     "SOME ARGUMENT": f"IDX: {i}",
                 }

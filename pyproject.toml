@@ -8,7 +8,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-langgraph = "^0.1.1"
+langgraph = "^0.1.8"
 dydantic = "^0.0.6"
 jsonpatch = "^1.33"
 
