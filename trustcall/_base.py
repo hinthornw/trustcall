@@ -318,9 +318,9 @@ def create_extractor(
             return "validate"
         return "patch"
 
-    # builder.add_edge("patch", "validate")  # validate_or_repatch)
     builder.add_conditional_edges("patch", validate_or_repatch, ["validate", "__end__"])
     compiled = builder.compile()
+    compiled.name = "TrustCall"
 
     def filter_state(state: ExtractionState) -> ExtractionOutputs:
         """Filter the state to only include the validated AIMessage + responses."""
