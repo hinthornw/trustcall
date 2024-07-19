@@ -902,10 +902,14 @@ def csff_(function: Callable) -> Type[BaseModel]:
     return schema
 
 
+def _keep_first(left: Any, right: Any):
+    return left or right
+
+
 class ExtractionState(TypedDict):
     messages: Annotated[List[AnyMessage], _reduce_messages]
     attempts: Annotated[int, operator.add]
-    msg_id: Annotated[str, lambda left, right: left if left else right]
+    msg_id: Annotated[str, _keep_first]
     """Set once and never changed. The ID of the message to be patched."""
     existing: Optional[Dict[str, Any]]
     """If you're updating an existing schema, provide the existing schema here."""
