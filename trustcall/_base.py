@@ -12,6 +12,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Type,
@@ -60,9 +61,18 @@ Message = Union[MessageLikeRepresentation, MessageLikeRepresentation]
 Messages = Union[Message, Sequence[Message]]
 
 
+class SchemaInstance(NamedTuple):
+    record_id: str
+    schema_name: str
+    record: Dict[str, Any]
+
+
 class ExtractionInputs(TypedDict, total=False):
     messages: Union[Messages, PromptValue]
-    existing: Optional[Dict[str, Any]]
+    existing: Optional[Union[Dict[str, Any], List[SchemaInstance]]]
+    """Existing schemas. Key is the schema name, value is the schema instance.
+    If a list, supports duplicate schemas to update.
+    """
 
 
 InputsLike = Union[ExtractionInputs, List[AnyMessage], PromptValue]
@@ -79,6 +89,7 @@ def create_extractor(
     *,
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
+    enable_inserts: bool = False,
 ) -> Runnable[InputsLike, ExtractionOutputs]:
     """Create an extractor that generates validated structured outputs using an LLM.
 
@@ -94,6 +105,8 @@ def create_extractor(
         tool_choice (Optional[str]): The specific tool to use. If None,
             the LLM chooses whether to use (or not use) a tool based
             on the input messages. (default: None)
+        enable_inserts (bool): Whether to allow the LLM to extract new schemas
+            even if it receives existing schemas. (default: False)
 
     Returns:
         Runnable[ExtractionInputs, ExtractionOutputs]: A runnable that
@@ -238,7 +251,9 @@ def create_extractor(
         ).as_runnable()
     )
     builder.add_node(
-        _ExtractUpdates(llm, tools=validator.schemas_by_name.copy()).as_runnable()
+        _ExtractUpdates(
+            llm, tools=validator.schemas_by_name.copy(), enable_inserts=enable_inserts
+        ).as_runnable()
     )
     builder.add_node(_Patch(llm).as_runnable())
     builder.add_node("validate", validator)
@@ -309,7 +324,9 @@ def create_extractor(
                     )
         return to_send
 
-    builder.add_conditional_edges("validate", handle_retries)
+    builder.add_conditional_edges(
+        "validate", handle_retries, path_map=["__end__", "patch", "del_tool_call"]
+    )
 
     def validate_or_repatch(
         state: ExtractionState,
@@ -318,7 +335,9 @@ def create_extractor(
             return "validate"
         return "patch"
 
-    builder.add_conditional_edges("patch", validate_or_repatch, ["validate", "__end__"])
+    builder.add_conditional_edges(
+        "patch", validate_or_repatch, path_map=["validate", "patch", "__end__"]
+    )
     compiled = builder.compile()
     compiled.name = "TrustCall"
 
@@ -358,6 +377,9 @@ def create_extractor(
             return {"messages": state}
         if isinstance(state, PromptValue):
             return {"messages": state.to_messages()}
+        if isinstance(state, dict):
+            if isinstance(state.get("messages"), PromptValue):
+                state = {**state, "messages": state["messages"].to_messages()}  # type: ignore
         return cast(dict, state)
 
     return coerce_inputs | compiled | filter_state
@@ -471,9 +493,23 @@ class _ExtractUpdates:
     """
 
     def __init__(
-        self, llm: BaseChatModel, tools: Optional[Mapping[str, Type[BaseModel]]] = None
+        self,
+        llm: BaseChatModel,
+        tools: Optional[Mapping[str, Type[BaseModel]]] = None,
+        enable_inserts: bool = False,
     ):
-        self.bound = llm.bind_tools([PatchDoc], tool_choice=PatchDoc.__name__)
+        new_tools: list = [PatchDoc]
+        tool_choice = PatchDoc.__name__
+        if enable_inserts:  # Also let the LLM know that we can extract NEW schemas.
+            tools_ = [
+                schema
+                for name, schema in (tools or {}).items()
+                if name not in {PatchDoc.__name__, PatchFunctionErrors.__name__}
+            ]
+            new_tools.extend(tools_)
+            tool_choice = "any"
+        self.enable_inserts = enable_inserts
+        self.bound = llm.bind_tools(new_tools, tool_choice=tool_choice)
         self.tools = tools
 
     @ls.traceable
@@ -483,27 +519,43 @@ class _ExtractUpdates:
         if not existing:
             raise ValueError("No existing schemas provided.")
         schema_strings = []
-        for k, v in existing.items():
-            schema = self.tools.get(k) if self.tools else None
-            if not schema:
-                schema_str = ""
-                logger.warning(f"Schema {k} not be found for existing payload {v}")
-            else:
-                schema_json = schema.schema()
-                schema_str = f"""
-<json_schema>
-{schema_json}
-</json_schema>
-"""
-            schema_strings.append(
-                f"<schema id={k}>\n<instance>\n{v}\n</instance>{schema_str}</schema>"
-            )
+        if isinstance(existing, dict):
+            for k, v in existing.items():
+                schema = self.tools.get(k) if self.tools else None
+                if not schema:
+                    schema_str = ""
+                    logger.warning(
+                        f"Schema {k} could not not be found for existing payload {v}"
+                    )
+                else:
+                    schema_json = schema.schema()
+                    schema_str = f"""
+    <json_schema>
+    {schema_json}
+    </json_schema>
+    """
+                schema_strings.append(
+                    f"<schema id={k}>\n<instance>\n{v}\n"
+                    f"</instance>{schema_str}</schema>"
+                )
+        else:
+            for schema_id, tname, d in existing:
+                schema_strings.append(
+                    f'<instance id={schema_id} schema_type="{tname}">\n{d}\n</instance>'
+                )
 
         existing_schemas = "\n".join(schema_strings)
+        cmd = "Generate JSONPatches to update the existing schema instances."
+        if self.enable_inserts:
+            cmd += (
+                " If you need to extract or insert *new* instances of the schemas"
+                ", call the relevant function(s)."
+            )
 
-        existing_msg = f"""Generate a JSONPatch to update the existing schema instances.
-
+        existing_msg = f"""{cmd}
+<existing>
 {existing_schemas}
+</existing>
 """
         if isinstance(messages[0], SystemMessage):
             system_message = messages.pop(0)
@@ -518,28 +570,57 @@ class _ExtractUpdates:
         return [system_message] + messages, existing
 
     @ls.traceable
-    def _teardown(self, msg: AIMessage, existing: Dict[str, Any]):
+    def _teardown(
+        self,
+        msg: AIMessage,
+        existing: Union[Dict[str, Any], List[SchemaInstance]],
+    ):
         resolved_tool_calls = []
         rt = ls.get_current_run_tree()
         for tc in msg.tool_calls:
-            json_doc_id = tc["args"]["json_doc_id"]
-            if target := existing.get(json_doc_id):
-                try:
-                    resolved_tool_calls.append(
-                        ToolCall(
-                            id=tc["id"],
-                            name=json_doc_id,
-                            args=jsonpatch.apply_patch(target, tc["args"]["patches"]),
+            if tc["name"] == PatchDoc.__name__:
+                json_doc_id = tc["args"]["json_doc_id"]
+                if isinstance(existing, dict):
+                    target = existing.get(str(json_doc_id))
+                    tool_name = json_doc_id
+                else:
+                    try:
+                        _, tool_name, target = next(
+                            (e for e in existing if e[0] == json_doc_id),
                         )
-                    )
-                except jsonpatch.JsonPatchConflict as e:
-                    logger.error(f"Could not apply patch: {e}")
+                        if not tool_name:
+                            raise ValueError("Could not find tool name")
+                    except (ValueError, IndexError, TypeError):
+                        logger.error(
+                            f"Could not find existing schema in list for {json_doc_id}"
+                        )
+                        if rt:
+                            rt.error = (
+                                f"Could not find existing schema for {json_doc_id}"
+                            )
+                        continue
+
+                if target:
+                    try:
+                        resolved_tool_calls.append(
+                            ToolCall(
+                                id=tc["id"],
+                                name=tool_name,
+                                args=jsonpatch.apply_patch(
+                                    target, tc["args"]["patches"]
+                                ),
+                            )
+                        )
+                    except jsonpatch.JsonPatchConflict as e:
+                        logger.error(f"Could not apply patch: {e}")
+                        if rt:
+                            rt.error = f"Could not apply patch: {e}"
+                else:
                     if rt:
-                        rt.error = f"Could not apply patch: {e}"
+                        rt.error = f"Could not find existing schema for {tool_name}"
+                    logger.warning(f"Could not find existing schema for {tool_name}")
             else:
-                if rt:
-                    rt.error = f"Could not find existing schema for {json_doc_id}"
-                logger.warning(f"Could not find existing schema for {json_doc_id}")
+                resolved_tool_calls.append(tc)
         ai_message = AIMessage(
             content=msg.content,
             tool_calls=resolved_tool_calls,

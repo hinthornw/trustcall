@@ -327,7 +327,6 @@ async def test_patch_existing(
                     "id": tc_id if i == 0 else f"tool_{uuid.uuid4()}",
                     "name": PatchDoc.__name__,
                     "args": patch(json_doc_id),
-                    "SOME ARGUMENT": f"IDX: {i}",
                 }
             ],
         )
