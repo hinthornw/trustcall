@@ -11,8 +11,9 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, InjectedToolArg, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from typing_extensions import Annotated
 
 from trustcall._base import (
     PatchDoc,
@@ -97,6 +98,16 @@ def my_cool_tool(arg1: str, arg2: MyNestedSchema) -> None:
 def _get_tool_as(style: str) -> Any:
     """Coerce a string to a function, tool, schema, or model."""
     tool_: BaseTool = tool(my_cool_tool)  # type: ignore
+
+    def my_cool_injected_tool(
+        arg1: str,
+        arg2: MyNestedSchema,
+        other_arg: Annotated[str, InjectedToolArg] = "default",
+    ) -> None:
+        """This is a cool tool."""
+        pass
+
+    setattr(my_cool_injected_tool, "__name__", "my_cool_tool")
     match style:
         case "fn":
             return my_cool_tool
@@ -106,6 +117,10 @@ def _get_tool_as(style: str) -> Any:
             return tool_.args_schema.schema()  # type: ignore
         case "model":
             return tool_.args_schema
+        case "injected_fn":
+            return my_cool_injected_tool
+        case "injected_tool":
+            return tool(my_cool_injected_tool)
         case _:
             raise ValueError(f"Invalid style: {style}")
 
@@ -182,6 +197,8 @@ def patch_2(tc_id: str) -> dict:
         "tool",
         "schema",
         "model",
+        "injected_fn",
+        "injected_tool",
     ],
 )
 @pytest.mark.parametrize(
@@ -249,7 +266,12 @@ async def test_extraction_with_retries(
     assert msg.tool_calls[0]["args"] == expected
     tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
-    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()  # type: ignore
+    pred = res["responses"][0].dict()
+    expected_res = tool_.args_schema.validate(expected).dict()  # type: ignore
+    if "injected" in style:
+        expected_res["other_arg"] = "default"
+        pred["other_arg"] = "default"
+    assert pred == expected_res
 
 
 def empty_patch(tc_id: str) -> dict:

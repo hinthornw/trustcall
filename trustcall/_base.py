@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import operator
 import uuid
@@ -43,12 +45,12 @@ from langchain_core.pydantic_v1 import (
     StrictInt,
 )
 from langchain_core.runnables import Runnable, RunnableConfig
-from langchain_core.tools import BaseTool, create_schema_from_function
+from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_function
 from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils import RunnableCallable
-from typing_extensions import Annotated, TypedDict
+from typing_extensions import Annotated, TypedDict, get_args
 
 logger = logging.getLogger("extraction")
 
@@ -978,7 +980,8 @@ def _infer_patch_message_ops(
 
 
 def csff_(function: Callable) -> Type[BaseModel]:
-    schema = create_schema_from_function(function.__name__, function)
+    fn = _strip_injected(function)
+    schema = create_schema_from_function(function.__name__, fn)
     schema.__name__ = function.__name__
     return schema
 
@@ -1044,6 +1047,47 @@ class _ExtendedValidationNode(ValidationNode):
                 return outputs
             else:
                 return {"messages": outputs}
+
+
+def _is_injected_arg_type(type_: Type) -> bool:
+    return any(
+        isinstance(arg, InjectedToolArg)
+        or (isinstance(arg, type) and issubclass(arg, InjectedToolArg))
+        for arg in get_args(type_)[1:]
+    )
+
+
+def _curry(func: Callable, **fixed_kwargs: Any) -> Callable:
+    """Bind parameters to a function, removing those parameters from the signature.
+
+    Useful for exposing a narrower interface than what the the original function
+    provides.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        new_kwargs = {**fixed_kwargs, **cast(fixed_kwargs, kwargs)}
+        return func(*args, **new_kwargs)
+
+    sig = inspect.signature(func)
+    # Check that fixed_kwargs are all valid parameters of the function
+    invalid_kwargs = set(fixed_kwargs) - set(sig.parameters)
+    if invalid_kwargs:
+        raise ValueError(f"Invalid parameters: {invalid_kwargs}")
+
+    new_params = [p for name, p in sig.parameters.items() if name not in fixed_kwargs]
+    wrapper.__signature__ = sig.replace(parameters=new_params)
+    return wrapper
+
+
+def _strip_injected(fn: Callable) -> Callable:
+    """Strip injected arguments from a function's signature."""
+    injected = [
+        p.name
+        for p in inspect.signature(fn).parameters.values()
+        if _is_injected_arg_type(p.annotation)
+    ]
+    return _curry(fn, **{k: None for k in injected})
 
 
 __all__ = [
