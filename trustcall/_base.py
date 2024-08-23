@@ -240,15 +240,16 @@ def create_extractor(
         ensure_tools(tools) + [PatchDoc, PatchFunctionErrors],
         format_error=format_exception,
     )
-
+    _extract_tools = [
+        schema
+        for name, schema in validator.schemas_by_name.items()
+        if name not in {PatchDoc.__name__, PatchFunctionErrors.__name__}
+    ]
+    tool_names = [getattr(t, "name", t.__name__) for t in _extract_tools]
     builder.add_node(
         _Extract(
             llm,
-            [
-                schema
-                for name, schema in validator.schemas_by_name.items()
-                if name not in {PatchDoc.__name__, PatchFunctionErrors.__name__}
-            ],
+            _extract_tools,
             tool_choice,
         ).as_runnable()
     )
@@ -257,7 +258,7 @@ def create_extractor(
             llm, tools=validator.schemas_by_name.copy(), enable_inserts=enable_inserts
         ).as_runnable()
     )
-    builder.add_node(_Patch(llm).as_runnable())
+    builder.add_node(_Patch(llm, valid_tool_names=tool_names).as_runnable())
     builder.add_node("validate", validator)
 
     def del_tool_call(state: DeletionState) -> dict:
@@ -686,12 +687,15 @@ class _Patch:
     re-creating the entire tool call from scratch.
     """
 
-    def __init__(self, llm: BaseChatModel):
+    def __init__(
+        self, llm: BaseChatModel, valid_tool_names: Optional[List[str]] = None
+    ):
         self.bound = llm.bind_tools(
-            [PatchFunctionErrors], tool_choice=PatchFunctionErrors.__name__
+            [PatchFunctionErrors, _create_patch_function_name_schema(valid_tool_names)],
+            tool_choice="any",
         )
 
-    @ls.traceable(tags=["patch"])
+    @ls.traceable(tags=["patch", "langsmith:hidden"])
     def _tear_down(self, msg: AIMessage, messages: List[AnyMessage], target_id: str):
         if not msg.id:
             msg.id = str(uuid.uuid4())
@@ -814,9 +818,37 @@ class PatchFunctionErrors(BaseModel):
     patches: list[JsonPatch] = Field(
         ...,
         description="A list of JSONPatch operations to be applied to the"
-        " previous tool call's response. If none are required, return an empty list."
-        " This field is REQUIRED.",
+        " previous tool call's response arguments. If none are required, return"
+        " an empty list. This field is REQUIRED.",
     )
+
+
+def _create_patch_function_name_schema(valid_tool_names: Optional[List[str]] = None):
+    if valid_tool_names:
+        namestr = ", ".join(valid_tool_names)
+        vname = f" Must be one of {namestr}"
+    else:
+        vname = ""
+
+    class PatchFunctionName(BaseModel):
+        """Call this if the tool message indicates that you previously invoked an invalid tool, (e.g., "Unrecognized tool name" error), do so here."""  # noqa
+
+        json_doc_id: str = Field(
+            ...,
+            description="The ID of the function you are patching.",
+        )
+        reasoning: list[str] = Field(
+            ...,
+            description="At least 2 logical reasons why this action ought to be taken."
+            "Cite the specific error(s) mentioned to motivate the fix.",
+        )
+        fixed_name: Optional[str] = Field(
+            ...,
+            description="If you need to change the name of the function (e.g., "
+            f'from an "Unrecognized tool name" error), do so here.{vname}',
+        )
+
+    return PatchFunctionName
 
 
 # Used for updating existing documents
@@ -842,7 +874,7 @@ class PatchDoc(BaseModel):
 
 
 class MessageOp(TypedDict):
-    op: Literal["delete", "update_tool_call"]
+    op: Literal["delete", "update_tool_call", "update_tool_name"]
     target: Union[str, ToolCall]
 
 
@@ -897,6 +929,28 @@ def _apply_message_ops(
                 else:
                     messages_.append(m)
             messages = messages_
+        elif message_op["op"] == "update_tool_name":
+            targ = cast(dict, message_op["target"])
+            messages_ = []
+            for m in messages:
+                if isinstance(m, AIMessage):
+                    new = []
+                    for tc in m.tool_calls:
+                        if tc["id"] == targ["id"]:
+                            new.append(
+                                {
+                                    "id": targ["id"],
+                                    "name": targ["name"],  # Just updating the name
+                                    "args": tc["args"],
+                                }
+                            )
+                        else:
+                            new.append(tc)
+                    if m.tool_calls != new:
+                        m = m.copy()
+                        m.tool_calls = new
+                    messages_.append(m)
+            messages = messages_
 
         else:
             raise ValueError(f"Invalid operation: {message_op['op']}")
@@ -936,7 +990,7 @@ def _reduce_messages(
 
 
 def _get_message_op(
-    messages: Sequence[AnyMessage], tool_call: dict, target_id: str
+    messages: Sequence[AnyMessage], tool_call: dict, tool_call_name: str, target_id: str
 ) -> List[MessageOp]:
     msg_ops: List[MessageOp] = []
     rt = ls.get_current_run_tree()
@@ -944,38 +998,55 @@ def _get_message_op(
         if isinstance(m, AIMessage):
             for tc in m.tool_calls:
                 if tc["id"] == target_id:
-                    try:
-                        patched_args = jsonpatch.apply_patch(
-                            tc["args"], tool_call["patches"]
-                        )
+                    if tool_call_name == "PatchFunctionName":
                         msg_ops.append(
                             {
-                                "op": "update_tool_call",
+                                "op": "update_tool_name",
                                 "target": {
                                     "id": target_id,
-                                    "name": tc["name"],
-                                    "args": patched_args,
+                                    "name": tool_call["fixed_name"],
                                 },
                             }
                         )
-                    except jsonpatch.JsonPatchConflict as e:
+                    elif tool_call_name == "PatchFunctionErrors":
+                        try:
+                            patched_args = jsonpatch.apply_patch(
+                                tc["args"], tool_call["patches"]
+                            )
+                            msg_ops.append(
+                                {
+                                    "op": "update_tool_call",
+                                    "target": {
+                                        "id": target_id,
+                                        "name": tc["name"],
+                                        "args": patched_args,
+                                    },
+                                }
+                            )
+                        except jsonpatch.JsonPatchConflict as e:
+                            if rt:
+                                rt.error = f"Could not apply patch: {repr(e)}"
+                            logger.error(f"Could not apply patch: {repr(e)}")
+                    else:
                         if rt:
-                            rt.error = f"Could not apply patch: {e}"
-                        logger.error(f"Could not apply patch: {e}")
+                            rt.error = f"Unrecognized function call {tool_call_name}"
+                        logger.error(f"Unrecognized function call {tool_call_name}")
         if isinstance(m, ToolMessage):
             if m.tool_call_id == target_id:
                 msg_ops.append(MessageOp(op="delete", target=m.id or ""))
     return msg_ops
 
 
-@ls.traceable
+@ls.traceable(tags=["langsmith:hidden"])
 def _infer_patch_message_ops(
     messages: Sequence[AnyMessage], tool_calls: List[ToolCall], target_id: str
 ):
     return [
         op
         for tool_call in tool_calls
-        for op in _get_message_op(messages, tool_call["args"], target_id=target_id)
+        for op in _get_message_op(
+            messages, tool_call["args"], tool_call["name"], target_id=target_id
+        )
     ]
 
 
@@ -1027,8 +1098,10 @@ class _ExtendedValidationNode(ValidationNode):
             except KeyError:
                 valid_names = ", ".join(self.schemas_by_name.keys())
                 return ToolMessage(
-                    content=f"Unrecognized tool name {call['name']}. Please"
-                    f" respond with one of the following: {valid_names}",
+                    content=f"Unrecognized tool name: \"{call['name']}\". You only have"
+                    f" access to the following tools: {valid_names}."
+                    " Please call PatchFunctionName with the *correct* tool name"
+                    f" to fix json_doc_id=[{call['id']}].",
                     name=call["name"],
                     tool_call_id=cast(str, call["id"]),
                     additional_kwargs={"is_error": True},
