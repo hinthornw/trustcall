@@ -185,12 +185,13 @@ class MetricProcessor:
         return {k: self[k] for k in self.counts.keys()}
 
 
-@pytest.mark.asyncio_cooperative
+# @pytest.mark.asyncio_cooperative
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize(
     "model_name",
     [
         "gpt-4o",
+        # "gpt-4o-mini",
         # "gpt-3.5-turbo",
         # "claude-3-5-sonnet-20240620",
         # "accounts/fireworks/models/firefunction-v2",

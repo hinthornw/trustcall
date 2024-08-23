@@ -1008,7 +1008,7 @@ def _get_message_op(
                                 },
                             }
                         )
-                    elif tool_call_name == "PatchFunctionErrors":
+                    elif tool_call_name in ("PatchFunctionErrors", "PatchDoc"):
                         try:
                             patched_args = jsonpatch.apply_patch(
                                 tc["args"], tool_call["patches"]
