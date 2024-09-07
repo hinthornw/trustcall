@@ -7,6 +7,7 @@ import inspect
 import logging
 import operator
 import uuid
+from dataclasses import asdict, dataclass, field
 from typing import (
     Any,
     Callable,
@@ -49,7 +50,7 @@ from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_f
 from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
-from langgraph.utils import RunnableCallable
+from langgraph.utils.runnable import RunnableCallable
 from typing_extensions import Annotated, TypedDict, get_args
 
 logger = logging.getLogger("extraction")
@@ -238,7 +239,7 @@ def create_extractor(
 
     validator = _ExtendedValidationNode(
         ensure_tools(tools) + [PatchDoc, PatchFunctionErrors],
-        format_error=format_exception,
+        format_error=format_exception,  # type: ignore
     )
     _extract_tools = [
         schema
@@ -255,7 +256,9 @@ def create_extractor(
     )
     builder.add_node(
         _ExtractUpdates(
-            llm, tools=validator.schemas_by_name.copy(), enable_inserts=enable_inserts
+            llm,
+            tools=validator.schemas_by_name.copy(),
+            enable_inserts=enable_inserts,  # type: ignore
         ).as_runnable()
     )
     builder.add_node(_Patch(llm, valid_tool_names=tool_names).as_runnable())
@@ -263,13 +266,13 @@ def create_extractor(
 
     def del_tool_call(state: DeletionState) -> dict:
         return {
-            "messages": MessageOp(op="delete", target=state["deletion_target"]),
+            "messages": MessageOp(op="delete", target=state.deletion_target),
         }
 
     builder.add_node(del_tool_call)
 
     def enter(state: ExtractionState) -> Literal["extract", "extract_updates"]:
-        if state.get("existing"):
+        if state.existing:
             return "extract_updates"
         return "extract"
 
@@ -278,7 +281,7 @@ def create_extractor(
     def validate_or_retry(
         state: ExtractionState,
     ) -> Literal["validate", "extract_updates"]:
-        if state["messages"][-1].type == "ai":
+        if state.messages[-1].type == "ai":
             return "validate"
         return "extract_updates"
 
@@ -290,27 +293,29 @@ def create_extractor(
     ) -> Union[Literal["__end__"], list]:
         """After validation, decide whether to retry or end the process."""
         max_attempts = config["configurable"].get("max_attempts", DEFAULT_MAX_ATTEMPTS)
-        if state["attempts"] >= max_attempts:
+        if state.attempts >= max_attempts:
             return "__end__"
         # Only continue if we need to patch the tool call
         to_send = []
-        for m in reversed(state["messages"]):
+        for m in reversed(state.messages):
             if isinstance(m, AIMessage):
                 break
             if isinstance(m, ToolMessage):
                 if m.additional_kwargs.get("is_error"):
                     # Each fallback will fix at most 1 schema per time.
                     messages_for_fixing = _get_history_for_tool_call(
-                        state["messages"], m.tool_call_id
+                        state.messages, m.tool_call_id
                     )
                     to_send.append(
                         Send(
                             "patch",
-                            {
-                                **state,
-                                "messages": messages_for_fixing,
-                                "tool_call_id": m.tool_call_id,
-                            },
+                            ExtendedExtractState(
+                                **{
+                                    **asdict(state),
+                                    "messages": messages_for_fixing,
+                                    "tool_call_id": m.tool_call_id,
+                                }
+                            ),
                         )
                     )
                 else:
@@ -319,10 +324,12 @@ def create_extractor(
                     to_send.append(
                         Send(
                             "del_tool_call",
-                            {
-                                "deletion_target": m.id,
-                                "messages": state["messages"],
-                            },
+                            DeletionState(
+                                **{
+                                    "deletion_target": m.id,
+                                    "messages": state.messages,
+                                }
+                            ),
                         )
                     )
         return to_send
@@ -334,7 +341,7 @@ def create_extractor(
     def validate_or_repatch(
         state: ExtractionState,
     ) -> Literal["validate", "patch"]:
-        if state["messages"][-1].type == "ai":
+        if state.messages[-1].type == "ai":
             return "validate"
         return "patch"
 
@@ -344,21 +351,17 @@ def create_extractor(
     compiled = builder.compile()
     compiled.name = "TrustCall"
 
-    def filter_state(state: ExtractionState) -> ExtractionOutputs:
+    def filter_state(state: Union[dict, ExtractionState]) -> ExtractionOutputs:
         """Filter the state to only include the validated AIMessage + responses."""
-        msg_id = state.get("msg_id")
+        if isinstance(state, dict):
+            state = ExtractionState(**state)
+        msg_id = state.msg_id
         msg: Optional[AIMessage] = next(
-            (
-                m
-                for m in state["messages"]
-                if m.id == msg_id and isinstance(m, AIMessage)
-            ),
+            (m for m in state.messages if m.id == msg_id and isinstance(m, AIMessage)),
             None,
         )
         if not msg:
-            return ExtractionOutputs(
-                messages=[], responses=[], attempts=state["attempts"]
-            )
+            return ExtractionOutputs(messages=[], responses=[], attempts=state.attempts)
         responses = []
         for tc in msg.tool_calls:
             sch = validator.schemas_by_name[tc["name"]]
@@ -371,7 +374,7 @@ def create_extractor(
         return {
             "messages": [msg],
             "responses": responses,
-            "attempts": state["attempts"],
+            "attempts": state.attempts,
         }
 
     def coerce_inputs(state: InputsLike) -> Union[ExtractionInputs, dict]:
@@ -382,7 +385,7 @@ def create_extractor(
             return {"messages": state.to_messages()}
         if isinstance(state, dict):
             if isinstance(state.get("messages"), PromptValue):
-                state = {**state, "messages": state["messages"].to_messages()}  # type: ignore
+                state = {**state, "messages": state.messages.to_messages()}  # type: ignore
         return cast(dict, state)
 
     return coerce_inputs | compiled | filter_state
@@ -473,11 +476,11 @@ class _Extract:
         }
 
     async def ainvoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
-        msg = await self.bound_llm.ainvoke(state["messages"], config)
+        msg = await self.bound_llm.ainvoke(state.messages, config)
         return self._tear_down(cast(AIMessage, msg))
 
     def invoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
-        msg = self.bound_llm.invoke(state["messages"], config)
+        msg = self.bound_llm.invoke(state.messages, config)
         return self._tear_down(msg)
 
     def as_runnable(self):
@@ -517,8 +520,8 @@ class _ExtractUpdates:
 
     @ls.traceable
     def _setup(self, state: ExtractionState):
-        messages = state["messages"]
-        existing = state["existing"]
+        messages = state.messages
+        existing = state.existing
         if not existing:
             raise ValueError("No existing schemas provided.")
         schema_strings = []
@@ -717,14 +720,12 @@ class _Patch:
             - The last ToolMessage contains the tool call to fix.
 
         """
-        msg = await self.bound.ainvoke(state["messages"], config)
-        return self._tear_down(msg, state["messages"], state["tool_call_id"])
+        msg = await self.bound.ainvoke(state.messages, config)
+        return self._tear_down(msg, state.messages, state.tool_call_id)
 
     def invoke(self, state: ExtendedExtractState, config: RunnableConfig) -> dict:
-        msg = self.bound.invoke(state["messages"], config)
-        return self._tear_down(
-            cast(AIMessage, msg), state["messages"], state["tool_call_id"]
-        )
+        msg = self.bound.invoke(state.messages, config)
+        return self._tear_down(cast(AIMessage, msg), state.messages, state.tool_call_id)
 
     def as_runnable(self):
         return RunnableCallable(self.invoke, self.ainvoke, name="patch", trace=False)
@@ -1061,22 +1062,27 @@ def _keep_first(left: Any, right: Any):
     return left or right
 
 
-class ExtractionState(TypedDict):
-    messages: Annotated[List[AnyMessage], _reduce_messages]
-    attempts: Annotated[int, operator.add]
-    msg_id: Annotated[str, _keep_first]
+@dataclass(kw_only=True)
+class ExtractionState:
+    messages: Annotated[List[AnyMessage], _reduce_messages] = field(
+        default_factory=list
+    )
+    attempts: Annotated[int, operator.add] = field(default=0)
+    msg_id: Annotated[str, _keep_first] = field(default="")
     """Set once and never changed. The ID of the message to be patched."""
-    existing: Optional[Dict[str, Any]]
+    existing: Optional[Dict[str, Any]] = field(default=None)
     """If you're updating an existing schema, provide the existing schema here."""
 
 
+@dataclass(kw_only=True)
 class ExtendedExtractState(ExtractionState):
-    tool_call_id: str
+    tool_call_id: str = field(default="")
     """The ID of the tool call to be patched."""
 
 
+@dataclass(kw_only=True)
 class DeletionState(ExtractionState):
-    deletion_target: str
+    deletion_target: str = field(default="")
 
 
 class _ExtendedValidationNode(ValidationNode):
@@ -1084,7 +1090,7 @@ class _ExtendedValidationNode(ValidationNode):
         self, input: Union[list[AnyMessage], dict[str, Any]], config: RunnableConfig
     ) -> Any:
         """Validate and run tool calls synchronously."""
-        output_type, message = self._get_message(input)
+        output_type, message = self._get_message(asdict(input))
 
         def run_one(call: ToolCall):
             try:
