@@ -38,19 +38,19 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.prompt_values import PromptValue
-from langchain_core.pydantic_v1 import (
-    BaseModel,
-    Field,
-    StrictBool,
-    StrictFloat,
-    StrictInt,
-)
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_function
 from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils.runnable import RunnableCallable
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+)
 from typing_extensions import Annotated, TypedDict, get_args
 
 logger = logging.getLogger("extraction")
