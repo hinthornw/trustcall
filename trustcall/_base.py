@@ -385,7 +385,11 @@ def create_extractor(
             return {"messages": state.to_messages()}
         if isinstance(state, dict):
             if isinstance(state.get("messages"), PromptValue):
-                state = {**state, "messages": state.messages.to_messages()}  # type: ignore
+                state = {**state, "messages": state["messages"].to_messages()}  # type: ignore
+        else:
+            if hasattr(state, "messages"):
+                state = {"messages": state.messages.to_messages()}  # type: ignore
+
         return cast(dict, state)
 
     return coerce_inputs | compiled | filter_state
