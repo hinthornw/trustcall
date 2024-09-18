@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "trustcall"
-version = "0.0.16"
+version = "0.0.17"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 authors = ["William Fu-Hinthorn <13333726+hinthornw@users.noreply.github.com>"]
 license = "MIT"

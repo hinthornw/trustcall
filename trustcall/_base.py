@@ -45,7 +45,7 @@ from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils.runnable import RunnableCallable
 from pydantic import (
-    BaseModel,
+    ConfigDict, BaseModel,
     Field,
     StrictBool,
     StrictFloat,
@@ -766,36 +766,34 @@ class JsonPatch(BaseModel):
         " Pay close attention to the json schema to ensure"
         " patched document will be valid.",
     )
-
-    class Config:
-        schema_extra = {
-            "examples": [
-                {
-                    "op": "add",
-                    "path": "/path/to/my_array",
-                    "patch_value": ["some", "values"],
-                },
-                {
-                    "op": "add",
-                    "path": "/path/to/my_array/1",
-                    "patch_value": ["newer"],
-                },
-                {
-                    "op": "replace",
-                    "path": "/path/to/my_array/1",
-                    "patch_value": "even newer",
-                },
-                {
-                    "op": "remove",
-                    "path": "/path/to/my_array/1",
-                },
-                {
-                    "op": "replace",
-                    "path": "/path/to/broken_object",
-                    "patch_value": {"new": "object"},
-                },
-            ]
-        }
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [
+            {
+                "op": "add",
+                "path": "/path/to/my_array",
+                "patch_value": ["some", "values"],
+            },
+            {
+                "op": "add",
+                "path": "/path/to/my_array/1",
+                "patch_value": ["newer"],
+            },
+            {
+                "op": "replace",
+                "path": "/path/to/my_array/1",
+                "patch_value": "even newer",
+            },
+            {
+                "op": "remove",
+                "path": "/path/to/my_array/1",
+            },
+            {
+                "op": "replace",
+                "path": "/path/to/broken_object",
+                "patch_value": {"new": "object"},
+            },
+        ]
+    })
 
 
 # Used for fixing validation errors
