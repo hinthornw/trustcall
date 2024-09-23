@@ -44,13 +44,7 @@ from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils.runnable import RunnableCallable
-from pydantic import (
-    ConfigDict, BaseModel,
-    Field,
-    StrictBool,
-    StrictFloat,
-    StrictInt,
-)
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 from typing_extensions import Annotated, TypedDict, get_args
 
 logger = logging.getLogger("extraction")
@@ -325,10 +319,7 @@ def create_extractor(
                         Send(
                             "del_tool_call",
                             DeletionState(
-                                **{
-                                    "deletion_target": m.id,
-                                    "messages": state.messages,
-                                }
+                                deletion_target=str(m.id), messages=state.messages
                             ),
                         )
                     )
@@ -348,20 +339,24 @@ def create_extractor(
     builder.add_conditional_edges(
         "patch", validate_or_repatch, path_map=["validate", "patch", "__end__"]
     )
-    compiled = builder.compile()
+    compiled = builder.compile(checkpointer=False)
     compiled.name = "TrustCall"
 
-    def filter_state(state: Union[dict, ExtractionState]) -> ExtractionOutputs:
+    def filter_state(state: dict) -> ExtractionOutputs:
         """Filter the state to only include the validated AIMessage + responses."""
-        if isinstance(state, dict):
-            state = ExtractionState(**state)
-        msg_id = state.msg_id
+        msg_id = state["msg_id"]
         msg: Optional[AIMessage] = next(
-            (m for m in state.messages if m.id == msg_id and isinstance(m, AIMessage)),
+            (
+                m
+                for m in state["messages"]
+                if m.id == msg_id and isinstance(m, AIMessage)
+            ),  # type: ignore
             None,
         )
         if not msg:
-            return ExtractionOutputs(messages=[], responses=[], attempts=state.attempts)
+            return ExtractionOutputs(
+                messages=[], responses=[], attempts=state["attempts"]
+            )
         responses = []
         for tc in msg.tool_calls:
             sch = validator.schemas_by_name[tc["name"]]
@@ -374,7 +369,7 @@ def create_extractor(
         return {
             "messages": [msg],
             "responses": responses,
-            "attempts": state.attempts,
+            "attempts": state["attempts"],
         }
 
     def coerce_inputs(state: InputsLike) -> Union[ExtractionInputs, dict]:
@@ -766,34 +761,36 @@ class JsonPatch(BaseModel):
         " Pay close attention to the json schema to ensure"
         " patched document will be valid.",
     )
-    model_config = ConfigDict(json_schema_extra={
-        "examples": [
-            {
-                "op": "add",
-                "path": "/path/to/my_array",
-                "patch_value": ["some", "values"],
-            },
-            {
-                "op": "add",
-                "path": "/path/to/my_array/1",
-                "patch_value": ["newer"],
-            },
-            {
-                "op": "replace",
-                "path": "/path/to/my_array/1",
-                "patch_value": "even newer",
-            },
-            {
-                "op": "remove",
-                "path": "/path/to/my_array/1",
-            },
-            {
-                "op": "replace",
-                "path": "/path/to/broken_object",
-                "patch_value": {"new": "object"},
-            },
-        ]
-    })
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array",
+                    "patch_value": ["some", "values"],
+                },
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array/1",
+                    "patch_value": ["newer"],
+                },
+                {
+                    "op": "replace",
+                    "path": "/path/to/my_array/1",
+                    "patch_value": "even newer",
+                },
+                {
+                    "op": "remove",
+                    "path": "/path/to/my_array/1",
+                },
+                {
+                    "op": "replace",
+                    "path": "/path/to/broken_object",
+                    "patch_value": {"new": "object"},
+                },
+            ]
+        }
+    )
 
 
 # Used for fixing validation errors
@@ -933,17 +930,19 @@ def _apply_message_ops(
                     messages_.append(m)
             messages = messages_
         elif message_op["op"] == "update_tool_name":
-            targ = cast(dict, message_op["target"])
+            update_targ = cast(dict, message_op["target"])
             messages_ = []
             for m in messages:
                 if isinstance(m, AIMessage):
                     new = []
                     for tc in m.tool_calls:
-                        if tc["id"] == targ["id"]:
+                        if tc["id"] == update_targ["id"]:
                             new.append(
                                 {
-                                    "id": targ["id"],
-                                    "name": targ["name"],  # Just updating the name
+                                    "id": update_targ["id"],
+                                    "name": update_targ[
+                                        "name"
+                                    ],  # Just updating the name
                                     "args": tc["args"],
                                 }
                             )
@@ -1005,9 +1004,9 @@ def _get_message_op(
                         msg_ops.append(
                             {
                                 "op": "update_tool_name",
-                                "target": {
+                                "target": {  # type: ignore[arg-type,typeddict-item]
                                     "id": target_id,
-                                    "name": tool_call["fixed_name"],
+                                    "name": str(tool_call["fixed_name"]),
                                 },
                             }
                         )
@@ -1088,9 +1087,7 @@ class DeletionState(ExtractionState):
 
 
 class _ExtendedValidationNode(ValidationNode):
-    def _func(
-        self, input: Union[list[AnyMessage], dict[str, Any]], config: RunnableConfig
-    ) -> Any:
+    def _func(self, input: ExtractionState, config: RunnableConfig) -> Any:  # type: ignore
         """Validate and run tool calls synchronously."""
         output_type, message = self._get_message(asdict(input))
 
@@ -1147,7 +1144,7 @@ def _curry(func: Callable, **fixed_kwargs: Any) -> Callable:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        new_kwargs = {**fixed_kwargs, **cast(fixed_kwargs, kwargs)}
+        new_kwargs = {**fixed_kwargs, **kwargs}
         return func(*args, **new_kwargs)
 
     sig = inspect.signature(func)
@@ -1157,7 +1154,7 @@ def _curry(func: Callable, **fixed_kwargs: Any) -> Callable:
         raise ValueError(f"Invalid parameters: {invalid_kwargs}")
 
     new_params = [p for name, p in sig.parameters.items() if name not in fixed_kwargs]
-    wrapper.__signature__ = sig.replace(parameters=new_params)
+    wrapper.__signature__ = sig.replace(parameters=new_params)  # type: ignore
     return wrapper
 
 
