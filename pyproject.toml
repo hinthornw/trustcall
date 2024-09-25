@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "trustcall"
-version = "0.0.18"
+version = "0.0.22"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 authors = ["William Fu-Hinthorn <13333726+hinthornw@users.noreply.github.com>"]
 license = "MIT"
@@ -9,7 +9,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 langgraph = ">=0.2.25"
-dydantic = "^0.0.6"
+dydantic = "^0.0.7"
 jsonpatch = "^1.33"
 
 [tool.poetry.group.dev.dependencies]

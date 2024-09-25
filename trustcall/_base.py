@@ -66,18 +66,23 @@ class SchemaInstance(NamedTuple):
 
 class ExtractionInputs(TypedDict, total=False):
     messages: Union[Messages, PromptValue]
-    existing: Optional[Union[Dict[str, Any], List[SchemaInstance]]]
+    existing: Optional[
+        Union[
+            Dict[str, Any], List[SchemaInstance], List[tuple[str, str, dict[str, Any]]]
+        ]
+    ]
     """Existing schemas. Key is the schema name, value is the schema instance.
     If a list, supports duplicate schemas to update.
     """
 
 
-InputsLike = Union[ExtractionInputs, List[AnyMessage], PromptValue]
+InputsLike = Union[ExtractionInputs, List[AnyMessage], PromptValue, str]
 
 
 class ExtractionOutputs(TypedDict):
     messages: List[AIMessage]
     responses: List[BaseModel]
+    response_metadata: List[dict[str, Any]]
     attempts: int
 
 
@@ -355,9 +360,14 @@ def create_extractor(
         )
         if not msg:
             return ExtractionOutputs(
-                messages=[], responses=[], attempts=state["attempts"]
+                messages=[],
+                responses=[],
+                attempts=state["attempts"],
+                response_metadata=[],
             )
         responses = []
+        response_metadata = []
+        updated_docs = msg.additional_kwargs.get("updated_docs") or {}
         for tc in msg.tool_calls:
             sch = validator.schemas_by_name[tc["name"]]
             responses.append(
@@ -365,10 +375,15 @@ def create_extractor(
                 if hasattr(sch, "model_validate")
                 else sch.parse_obj(tc["args"])
             )
+            meta = {"id": tc["id"]}
+            if json_doc_id := updated_docs.get(tc["id"]):
+                meta["json_doc_id"] = json_doc_id
+            response_metadata.append(meta)
 
         return {
             "messages": [msg],
             "responses": responses,
+            "response_metadata": response_metadata,
             "attempts": state["attempts"],
         }
 
@@ -376,6 +391,8 @@ def create_extractor(
         """Coerce inputs to the expected format."""
         if isinstance(state, list):
             return {"messages": state}
+        if isinstance(state, str):
+            return {"messages": [{"role": "user", "content": state}]}
         if isinstance(state, PromptValue):
             return {"messages": state.to_messages()}
         if isinstance(state, dict):
@@ -533,7 +550,7 @@ class _ExtractUpdates:
                         f"Schema {k} could not not be found for existing payload {v}"
                     )
                 else:
-                    schema_json = schema.schema()
+                    schema_json = schema.model_json_schema()
                     schema_str = f"""
     <json_schema>
     {schema_json}
@@ -581,6 +598,7 @@ class _ExtractUpdates:
         existing: Union[Dict[str, Any], List[SchemaInstance]],
     ):
         resolved_tool_calls = []
+        updated_docs = {}
         rt = ls.get_current_run_tree()
         for tc in msg.tool_calls:
             if tc["name"] == PatchDoc.__name__:
@@ -616,10 +634,11 @@ class _ExtractUpdates:
                                 ),
                             )
                         )
+                        updated_docs[tc["id"]] = str(json_doc_id)
                     except jsonpatch.JsonPatchConflict as e:
                         logger.error(f"Could not apply patch: {e}")
                         if rt:
-                            rt.error = f"Could not apply patch: {e}"
+                            rt.error = f"Could not apply patch: {repr(e)}"
                 else:
                     if rt:
                         rt.error = f"Could not find existing schema for {tool_name}"
@@ -629,6 +648,7 @@ class _ExtractUpdates:
         ai_message = AIMessage(
             content=msg.content,
             tool_calls=resolved_tool_calls,
+            additional_kwargs={"updated_docs": updated_docs},
         )
         if not ai_message.id:
             ai_message.id = str(uuid.uuid4())
@@ -752,7 +772,9 @@ class JsonPatch(BaseModel):
     path: str = Field(
         ...,
         description="A JSON Pointer path that references a location within the"
-        " target document where the operation is performed.",
+        " target document where the operation is performed."
+        " Note: patches are applied sequentially. If you remove a value, the collection"
+        " size changes before the next patch is applied.",
     )
     value: Union[_JSON_TYPES, List[_JSON_TYPES], Dict[str, _JSON_TYPES]] = Field(
         ...,
@@ -765,28 +787,28 @@ class JsonPatch(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "op": "add",
-                    "path": "/path/to/my_array",
-                    "patch_value": ["some", "values"],
-                },
-                {
-                    "op": "add",
-                    "path": "/path/to/my_array/1",
-                    "patch_value": ["newer"],
-                },
-                {
                     "op": "replace",
                     "path": "/path/to/my_array/1",
-                    "patch_value": "even newer",
-                },
-                {
-                    "op": "remove",
-                    "path": "/path/to/my_array/1",
+                    "patch_value": "newer",
                 },
                 {
                     "op": "replace",
                     "path": "/path/to/broken_object",
                     "patch_value": {"new": "object"},
+                },
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array/-",
+                    "patch_value": ["some", "values"],
+                },
+                {
+                    "op": "add",
+                    "path": "/path/to/my_array/-",
+                    "patch_value": ["newer"],
+                },
+                {
+                    "op": "remove",
+                    "path": "/path/to/my_array/1",
                 },
             ]
         }
@@ -819,7 +841,9 @@ class PatchFunctionErrors(BaseModel):
         ...,
         description="A list of JSONPatch operations to be applied to the"
         " previous tool call's response arguments. If none are required, return"
-        " an empty list. This field is REQUIRED.",
+        " an empty list. This field is REQUIRED."
+        " Multiple patches in the list are applied sequentially in the order provided,"
+        " with each patch building upon the result of the previous one.",
     )
 
 
@@ -863,13 +887,28 @@ class PatchDoc(BaseModel):
         ...,
         description="Think step-by-step, reasoning over each required"
         " update and the corresponding JSONPatch operation to accomplish it."
-        " Cite the fields in the JSONSchema you referenced in developing this plan.",
+        " Cite the fields in the JSONSchema you referenced in developing this plan."
+        " Address each path as a group; don't switch between paths.\n"
+        " Plan your patches in the following order:"
+        "1. replace - this keeps collection size the same.\n"
+        "2. remove - BE CAREFUL ABOUT ORDER OF OPERATIONS."
+        " Each operation is applied sequentially."
+        " For arrays, remove the highest indexed value first to avoid shifting"
+        " indices. This ensures subsequent remove operations remain valid.\n"
+        " 3. add (for arrays, use /- to efficiently append to end).",
     )
     patches: list[JsonPatch] = Field(
         ...,
         description="A list of JSONPatch operations to be applied to the"
-        " previous tool call's response. If none are required, return an empty list."
-        " This field is REQUIRED.",
+        " previous tool call's response arguments. If none are required, return"
+        " an empty list. This field is REQUIRED."
+        " Multiple patches in the list are applied sequentially in the order provided,"
+        " with each patch building upon the result of the previous one."
+        " Take care to respect array bounds. Order patches as follows:\n"
+        " 1. replace - this keeps collection size the same\n"
+        " 2. remove - BE CAREFUL about order of operations. For arrays, remove"
+        " the highest indexed value first to avoid shifting indices.\n"
+        " 3. add - for arrays, use /- to efficiently append to end.",
     )
 
 
@@ -1094,9 +1133,9 @@ class _ExtendedValidationNode(ValidationNode):
         def run_one(call: ToolCall):
             try:
                 schema = self.schemas_by_name[call["name"]]
-                output = schema.validate(call["args"])
+                output = schema.model_validate(call["args"])
                 return ToolMessage(
-                    content=output.json(),
+                    content=output.model_dump_json(),
                     name=call["name"],
                     tool_call_id=cast(str, call["id"]),
                 )
