@@ -1,20 +1,20 @@
-# trustcall
+# 🤝trustcall
 
-Tool calling & validated extraction you can trust, built on LangGraph.
+`pip install trustcall`
 
-Uses [patch](https://datatracker.ietf.org/doc/html/rfc6902)-based extraction for:
+![](_static/cover.png)
 
-- Faster & cheaper generation of structured output.
-- Resilient retrying of validation errors, even for complex, nested schemas (defined as pydantic, schema dictionaries, or regular python functions)
-- Acccurate updates to existing schemas, avoiding undesired deletions.
+LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` solves this by asking the LLM to generate [JSON patch](https://datatracker.ietf.org/doc/html/rfc6902) operations. This is a simpler task that can be done iterative. This enables:
 
-Works flexibly across a number of common LLM workflows:
+⚡ Faster & cheaper generation of structured output.
+🐺Resilient retrying of validation errors, even for complex, nested schemas (defined as pydantic, schema dictionaries, or regular python functions)
+🧩Acccurate updates to existing schemas, avoiding undesired deletions.
 
-1. Extraction
-2. LLM routing
-3. Multi-step agent tool use
+Works flexibly across a number of common LLM workflows like:
 
-and more!
+✂️ Extraction 
+🧭 LLM routing
+🤖 Multi-step agent tool use
 
 ## Why trustcall?
 
@@ -102,7 +102,7 @@ Operator: It'll be there within the hour, sir."""
 bound.invoke(f"""Extract the preferences from the following conversation:
 <convo>
 {conversation}
-</convo>
+</convo>""")
 ```
 
 ```
