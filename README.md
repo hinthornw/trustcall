@@ -1,20 +1,28 @@
 # 🤝trustcall
 
-`pip install trustcall`
-
 ![](_static/cover.png)
 
 LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` solves this by asking the LLM to generate [JSON patch](https://datatracker.ietf.org/doc/html/rfc6902) operations. This is a simpler task that can be done iterative. This enables:
 
-⚡ Faster & cheaper generation of structured output.
-🐺Resilient retrying of validation errors, even for complex, nested schemas (defined as pydantic, schema dictionaries, or regular python functions)
-🧩Acccurate updates to existing schemas, avoiding undesired deletions.
+- ⚡ Faster & cheaper generation of structured output.
+- 🐺Resilient retrying of validation errors, even for complex, nested schemas (defined as pydantic, schema dictionaries, or regular python functions)
+- 🧩Acccurate updates to existing schemas, avoiding undesired deletions.
 
 Works flexibly across a number of common LLM workflows like:
 
-✂️ Extraction 
-🧭 LLM routing
-🤖 Multi-step agent tool use
+- ✂️ Extraction 
+- 🧭 LLM routing
+- 🤖 Multi-step agent tool use
+
+## Installation
+
+`pip install trustcall`
+
+## Usage
+
+- [Extracting complex schemas](#complex-schema)
+- [Updating schemas](#updating-schemas)
+- [Simultanous updates & insertions](#simultanous-updates--insertions)
 
 ## Why trustcall?
 
@@ -253,43 +261,42 @@ class User(BaseModel):
 And set a starting profile state:
 <details>
 <summary>Starting profile</summary>
-```python
-initial_user = User(
-    preferred_name="Alex",
-    favorite_media=FavoriteMedia(
-        shows=[
-            "Friends",
-            "Game of Thrones",
-            "Breaking Bad",
-            "The Office",
-            "Stranger Things",
+
+    initial_user = User(
+        preferred_name="Alex",
+        favorite_media=FavoriteMedia(
+            shows=[
+                "Friends",
+                "Game of Thrones",
+                "Breaking Bad",
+                "The Office",
+                "Stranger Things",
+            ],
+            movies=["The Shawshank Redemption", "Inception", "The Dark Knight"],
+            books=["1984", "To Kill a Mockingbird", "The Great Gatsby"],
+        ),
+        favorite_foods=["sushi", "pizza", "tacos", "ice cream", "pasta", "curry"],
+        hobbies=[
+            Hobby(name="reading", skill_level="expert", frequency="daily"),
+            Hobby(name="hiking", skill_level="intermediate", frequency="weekly"),
+            Hobby(name="photography", skill_level="beginner", frequency="monthly"),
+            Hobby(name="biking", skill_level="intermediate", frequency="weekly"),
+            Hobby(name="swimming", skill_level="expert", frequency="weekly"),
+            Hobby(name="canoeing", skill_level="beginner", frequency="monthly"),
+            Hobby(name="sailing", skill_level="intermediate", frequency="monthly"),
+            Hobby(name="weaving", skill_level="beginner", frequency="weekly"),
+            Hobby(name="painting", skill_level="intermediate", frequency="weekly"),
+            Hobby(name="cooking", skill_level="expert", frequency="daily"),
         ],
-        movies=["The Shawshank Redemption", "Inception", "The Dark Knight"],
-        books=["1984", "To Kill a Mockingbird", "The Great Gatsby"],
-    ),
-    favorite_foods=["sushi", "pizza", "tacos", "ice cream", "pasta", "curry"],
-    hobbies=[
-        Hobby(name="reading", skill_level="expert", frequency="daily"),
-        Hobby(name="hiking", skill_level="intermediate", frequency="weekly"),
-        Hobby(name="photography", skill_level="beginner", frequency="monthly"),
-        Hobby(name="biking", skill_level="intermediate", frequency="weekly"),
-        Hobby(name="swimming", skill_level="expert", frequency="weekly"),
-        Hobby(name="canoeing", skill_level="beginner", frequency="monthly"),
-        Hobby(name="sailing", skill_level="intermediate", frequency="monthly"),
-        Hobby(name="weaving", skill_level="beginner", frequency="weekly"),
-        Hobby(name="painting", skill_level="intermediate", frequency="weekly"),
-        Hobby(name="cooking", skill_level="expert", frequency="daily"),
-    ],
-    age=28,
-    occupation="Software Engineer",
-    address=Address(
-        street="123 Tech Lane", city="San Francisco", country="USA", postal_code="94105"
-    ),
-    favorite_color="blue",
-    pets=[Pet(kind="cat", name="Luna", age=3)],
-    languages={"English": "native", "Spanish": "intermediate", "Python": "expert"},
-)
-```
+        age=28,
+        occupation="Software Engineer",
+        address=Address(
+            street="123 Tech Lane", city="San Francisco", country="USA", postal_code="94105"
+        ),
+        favorite_color="blue",
+        pets=[Pet(kind="cat", name="Luna", age=3)],
+        languages={"English": "native", "Spanish": "intermediate", "Python": "expert"},
+    )
 </details>
 
 Giving the following conversation, we'd expect the memory to be **expanded** to include video gaming but not drop any other information:
