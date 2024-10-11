@@ -2,7 +2,7 @@
 
 ![](_static/cover.png)
 
-LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` solves this by asking the LLM to generate [JSON patch](https://datatracker.ietf.org/doc/html/rfc6902) operations. This is a simpler task that can be done iterative. This enables:
+LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` solves this by asking the LLM to generate [JSON patch](https://datatracker.ietf.org/doc/html/rfc6902) operations. This is a simpler task that can be done iteratively. This enables:
 
 - ⚡ Faster & cheaper generation of structured output.
 - 🐺Resilient retrying of validation errors, even for complex, nested schemas (defined as pydantic, schema dictionaries, or regular python functions)
