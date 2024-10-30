@@ -501,12 +501,11 @@ def _convert_any_typed_dicts_to_pydantic(
         visited[typed_dict] = model
         return model
     elif (origin := get_origin(type_)) and (type_args := get_args(type_)):
-        subscriptable_origin = get_origin(origin)
         type_args = tuple(
             _convert_any_typed_dicts_to_pydantic(arg, depth=depth + 1, visited=visited)
             for arg in type_args  # type: ignore[index]
         )
-        return subscriptable_origin[type_args]  # type: ignore[index]
+        return origin[type_args]  # type: ignore[index]
     else:
         return type_
 
