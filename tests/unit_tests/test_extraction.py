@@ -13,7 +13,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import BaseTool, InjectedToolArg, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
-from typing_extensions import Annotated
+from typing_extensions import Annotated, TypedDict
 
 from trustcall._base import (
     PatchDoc,
@@ -107,7 +107,14 @@ def _get_tool_as(style: str) -> Any:
         """This is a cool tool."""
         pass
 
+    class my_cool_tool2(TypedDict):
+        """This is a cool tool."""
+
+        arg1: str
+        arg2: MyNestedSchema
+
     setattr(my_cool_injected_tool, "__name__", "my_cool_tool")
+    setattr(my_cool_tool2, "__name__", "my_cool_tool")
     match style:
         case "fn":
             return my_cool_tool
@@ -117,6 +124,8 @@ def _get_tool_as(style: str) -> Any:
             return tool_.args_schema.schema()  # type: ignore
         case "model":
             return tool_.args_schema
+        case "typeddict":
+            return my_cool_tool2
         case "injected_fn":
             return my_cool_injected_tool
         case "injected_tool":
@@ -193,6 +202,7 @@ def patch_2(tc_id: str) -> dict:
 @pytest.mark.parametrize(
     "style",
     [
+        "typeddict",
         "fn",
         "tool",
         "schema",

@@ -44,8 +44,16 @@ from langgraph.constants import Send
 from langgraph.graph import START, StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils.runnable import RunnableCallable
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
-from typing_extensions import Annotated, TypedDict, get_args
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    create_model,
+)
+from typing_extensions import Annotated, TypedDict, get_args, get_origin, is_typeddict
 
 logger = logging.getLogger("extraction")
 
@@ -407,6 +415,9 @@ def create_extractor(
     return coerce_inputs | compiled | filter_state
 
 
+## Helper functions + reducers
+
+
 def ensure_tools(
     tools: Sequence[TOOL_T],
 ) -> List[Union[BaseTool, Type[BaseModel], Callable]]:
@@ -431,6 +442,8 @@ def ensure_tools(
                 if not model.__doc__:
                     model.__doc__ = t.get("description") or model.__name__
                 results.append(model)
+        elif is_typeddict(t):
+            results.append(_convert_any_typed_dicts_to_pydantic(cast(type, t)))
         elif isinstance(t, (BaseTool, type)):
             results.append(t)
         elif callable(t):
@@ -440,7 +453,62 @@ def ensure_tools(
     return list(results)
 
 
-## Helper functions + reducers
+_MAX_TYPED_DICT_RECURSION = 25
+
+
+def _convert_any_typed_dicts_to_pydantic(
+    type_: type,
+    *,
+    visited: dict | None = None,
+    depth: int = 0,
+) -> type:
+    visited = visited if visited is not None else {}
+    if type_ in visited:
+        return visited[type_]
+    elif depth >= _MAX_TYPED_DICT_RECURSION:
+        return type_
+    elif is_typeddict(type_):
+        typed_dict = type_
+        docstring = inspect.getdoc(typed_dict)
+        annotations_ = typed_dict.__annotations__
+        fields: dict = {}
+        for arg, arg_type in annotations_.items():
+            if get_origin(arg_type) is Annotated:
+                annotated_args = get_args(arg_type)
+                new_arg_type = _convert_any_typed_dicts_to_pydantic(
+                    annotated_args[0], depth=depth + 1, visited=visited
+                )
+                field_kwargs = dict(zip(("default", "description"), annotated_args[1:]))
+                if (field_desc := field_kwargs.get("description")) and not isinstance(
+                    field_desc, str
+                ):
+                    raise ValueError(
+                        f"Invalid annotation for field {arg}. Third argument to "
+                        f"Annotated must be a string description, received value of "
+                        f"type {type(field_desc)}."
+                    )
+                else:
+                    pass
+                fields[arg] = (new_arg_type, Field(**field_kwargs))
+            else:
+                new_arg_type = _convert_any_typed_dicts_to_pydantic(
+                    arg_type, depth=depth + 1, visited=visited
+                )
+                field_kwargs = {"default": ...}
+                fields[arg] = (new_arg_type, Field(**field_kwargs))
+        model = create_model(typed_dict.__name__, **fields)
+        model.__doc__ = docstring or ""
+        visited[typed_dict] = model
+        return model
+    elif (origin := get_origin(type_)) and (type_args := get_args(type_)):
+        subscriptable_origin = get_origin(origin)
+        type_args = tuple(
+            _convert_any_typed_dicts_to_pydantic(arg, depth=depth + 1, visited=visited)
+            for arg in type_args  # type: ignore[index]
+        )
+        return subscriptable_origin[type_args]  # type: ignore[index]
+    else:
+        return type_
 
 
 def _exclude_none(d: Dict[str, Any]) -> Dict[str, Any]:
