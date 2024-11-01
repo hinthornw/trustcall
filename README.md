@@ -690,7 +690,7 @@ print(res["responses"])
 ```
 
 Since the extractor also returns the chat message (with validated and cleaned tools),
-you can easiliy use the abstraction for conversational agent applications:
+you can easily use the abstraction for conversational agent applications:
 
 ```python
 import operator
