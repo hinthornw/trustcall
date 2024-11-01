@@ -67,18 +67,42 @@ Messages = Union[Message, Sequence[Message]]
 
 
 class SchemaInstance(NamedTuple):
+    """Represents an instance of a schema with its associated metadata.
+
+    This named tuple is used to store information about a specific schema instance,
+    including its unique identifier, the name of the schema it conforms to,
+    and the actual data of the record.
+
+    Attributes:
+        record_id (str): A unique identifier for this schema instance.
+        schema_name (str): The name of the schema that this instance conforms to.
+        record (dict[str, Any]): The actual data of the record, stored as a dictionary.
+    """
+
     record_id: str
     schema_name: str
     record: Dict[str, Any]
 
 
+ExistingType = Union[
+    Dict[str, Any], List[SchemaInstance], List[tuple[str, str, dict[str, Any]]]
+]
+"""Type for existing schemas.
+
+Can be one of:
+- Dict[str, Any]: A dictionary mapping schema names to schema instances.
+- List[SchemaInstance]: A list of SchemaInstance named tuples.
+- List[tuple[str, str, dict[str, Any]]]: A list of tuples containing
+  (record_id, schema_name, record_dict).
+
+This type allows for flexibility in representing existing schemas,
+supporting both single and multiple instances of each schema type.
+"""
+
+
 class ExtractionInputs(TypedDict, total=False):
     messages: Union[Messages, PromptValue]
-    existing: Optional[
-        Union[
-            Dict[str, Any], List[SchemaInstance], List[tuple[str, str, dict[str, Any]]]
-        ]
-    ]
+    existing: Optional[ExistingType]
     """Existing schemas. Key is the schema name, value is the schema instance.
     If a list, supports duplicate schemas to update.
     """
@@ -584,7 +608,7 @@ class _ExtractUpdates:
     def __init__(
         self,
         llm: BaseChatModel,
-        tools: Optional[Mapping[str, Type[BaseModel]]] = None,
+        tools: Mapping[str, Type[BaseModel]],
         enable_inserts: bool = False,
     ):
         new_tools: list = [PatchDoc]
@@ -607,22 +631,17 @@ class _ExtractUpdates:
         existing = state.existing
         if not existing:
             raise ValueError("No existing schemas provided.")
+        self._validate_existing(existing)
         schema_strings = []
         if isinstance(existing, dict):
             for k, v in existing.items():
-                schema = self.tools.get(k) if self.tools else None
-                if not schema:
-                    schema_str = ""
-                    logger.warning(
-                        f"Schema {k} could not not be found for existing payload {v}"
-                    )
-                else:
-                    schema_json = schema.model_json_schema()
-                    schema_str = f"""
-    <json_schema>
-    {schema_json}
-    </json_schema>
-    """
+                schema = self.tools[k]
+                schema_json = schema.model_json_schema()
+                schema_str = f"""
+<json_schema>
+{schema_json}
+</json_schema>
+"""
                 schema_strings.append(
                     f"<schema id={k}>\n<instance>\n{v}\n"
                     f"</instance>{schema_str}</schema>"
@@ -725,6 +744,54 @@ class _ExtractUpdates:
             "attempts": 1,
             "msg_id": ai_message.id,
         }
+
+    @property
+    def _provided_tools(self):
+        return sorted(self.tools.keys() - {"PatchDoc", "PatchFunctionErrors"})
+
+    def _validate_existing(self, existing: ExistingType):
+        if isinstance(existing, dict):
+            # Validate that all keys in existing match a tool name
+            for key in existing.keys():
+                if key not in self.tools:
+                    raise ValueError(
+                        f"Key '{key}' in existing does not match any tool"
+                        f" name. Provided: {existing}, Expected: A dictionary"
+                        " with keys matching one of the provided tool names:"
+                        f" {self._provided_tools}"
+                    )
+        elif isinstance(existing, list):
+            # For list types, validate each item's schema_name
+            for i, item in enumerate(existing):
+                if isinstance(item, SchemaInstance):
+                    if item.schema_name not in self.tools:
+                        raise ValueError(
+                            f"Schema name '{item.schema_name}'"
+                            f" at index {i} does not match any tool "
+                            f"name. Provided: {item}, Expected: SchemaInstance"
+                            f" with schema_name in {self._provided_tools}"
+                        )
+                elif isinstance(item, tuple) and len(item) == 3:
+                    if item[1] not in self.tools:
+                        raise ValueError(
+                            f"Schema name '{item[1]}' at index {i} does"
+                            f" not match any tool name. Provided: {item},"
+                            f" Expected: Tuple(str, str, dict) with second"
+                            f" element in {self._provided_tools}"
+                        )
+                else:
+                    raise ValueError(
+                        f"Invalid item at index {i} in existing list."
+                        f" Provided: {item}, Expected: SchemaInstance"
+                        f" or Tuple(str, str, dict)"
+                    )
+        else:
+            raise ValueError(
+                f"Invalid type for existing. Provided: {type(existing)},"
+                f" Expected: dict or list. Supported formats are:\n"
+                "1. Dict[str, Any] where keys are tool names\n"
+                "2. List[SchemaInstance]\n3. List[Tuple[str, str, Dict[str, Any]]]"
+            )
 
     async def ainvoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
         """Generate a JSONPatch to simply update an existing schema.

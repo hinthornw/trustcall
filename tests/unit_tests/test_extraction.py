@@ -18,6 +18,8 @@ from typing_extensions import Annotated, TypedDict
 from trustcall._base import (
     PatchDoc,
     PatchFunctionErrors,
+    SchemaInstance,
+    _ExtractUpdates,
     create_extractor,
     ensure_tools,
 )
@@ -387,3 +389,33 @@ async def test_patch_existing(
     tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
     assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()  # type: ignore
+
+
+@pytest.mark.parametrize(
+    "existing, tools, is_valid",
+    [
+        ({"tool1": {"key": "value"}}, {"tool1": BaseModel}, True),
+        ({"invalid_tool": {"key": "value"}}, {"tool1": BaseModel}, False),
+        (
+            [SchemaInstance("id1", "tool1", {"key": "value"})],
+            {"tool1": BaseModel},
+            True,
+        ),
+        (
+            [SchemaInstance("id1", "invalid_tool", {"key": "value"})],
+            {"tool1": BaseModel},
+            False,
+        ),
+        ([("id1", "tool1", {"key": "value"})], {"tool1": BaseModel}, True),
+        ([("id1", "invalid_tool", {"key": "value"})], {"tool1": BaseModel}, False),
+        ("invalid_type", {"tool1": BaseModel}, False),
+    ],
+)
+def test_validate_existing(existing, tools, is_valid):
+    extractor = _ExtractUpdates(FakeExtractionModel(), tools=tools)
+
+    if is_valid:
+        extractor._validate_existing(existing)
+    else:
+        with pytest.raises(ValueError):
+            extractor._validate_existing(existing)
