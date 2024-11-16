@@ -9,6 +9,7 @@ from langchain.chat_models import init_chat_model
 from langsmith import aevaluate, expect, traceable
 from langsmith.evaluation import EvaluationResults
 from langsmith.schemas import Example, Run
+from pydantic import BaseModel, field_validator
 from typing_extensions import TypedDict
 
 from trustcall import ExtractionInputs, ExtractionOutputs, create_extractor
@@ -72,7 +73,7 @@ async def predict_with_model(
     return result
 
 
-def score_run(run: Run, example: Example):
+def score_run(run: Run, example: Example) -> dict:  # type: ignore
     results = []
     passed = True
     try:
@@ -201,13 +202,13 @@ async def test_model(model_name: str):
     if model_name == "accounts/fireworks/models/firefunction-v2":
         pytest.skip("this endpoint is too flakey")
 
-    async def predict(dataset_inputs: DatasetInputs):
+    async def predict(dataset_inputs: DatasetInputs | dict):
         return await predict_with_model(model_name, **dataset_inputs)
 
     result = await aevaluate(
         predict,
         data="trustcall",
-        evaluators=[score_run],
+        evaluators=[score_run],  # type: ignore
         metadata={"model": model_name},
         experiment_prefix=f"{model_name}",
         max_concurrency=0,
@@ -229,3 +230,35 @@ async def test_simple() -> None:
         init_chat_model("gpt-4o"), tools=[query_docs], tool_choice="query_docs"
     )
     extractor.invoke({"messages": [("user", "What are the docs about?")]})
+
+
+@ls.test
+async def test_multi_tool() -> None:
+    class query_docs(BaseModel):
+        query: str
+
+        @field_validator("query")
+        def validate_query_length(cls, v: str) -> str:
+            if len(v) < 50:
+                raise ValueError("Query must be at least 50 characters long")
+            if not any(c.isdigit() for c in v):
+                raise ValueError(
+                    "Query must be at least 50 characters long and must start with a digit number (1.)"
+                )
+            return v
+
+    llm = init_chat_model("gpt-4o-mini")
+    extractor = create_extractor(llm, tools=[query_docs], tool_choice="any")
+    extractor.invoke(
+        {
+            "messages": [
+                (
+                    "user",
+                    "Write three queries for the docs:"
+                    "\nq1: Ask about the main topic."
+                    "\nq2: Ask about the total number of pages."
+                    "\nq3: Ask about the number of chapters, and include a 'k' parameter with a value of 3.",
+                )
+            ]
+        }
+    )
