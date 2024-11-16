@@ -41,7 +41,7 @@ from langchain_core.prompt_values import PromptValue
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_function
 from langgraph.constants import Send
-from langgraph.graph import START, StateGraph, add_messages
+from langgraph.graph import StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.utils.runnable import RunnableCallable
 from pydantic import (
@@ -61,9 +61,9 @@ logger = logging.getLogger("extraction")
 TOOL_T = Union[BaseTool, Type[BaseModel], Callable, Dict[str, Any]]
 DEFAULT_MAX_ATTEMPTS = 3
 
-Message = Union[MessageLikeRepresentation, MessageLikeRepresentation]
+Message = Union[AnyMessage, MessageLikeRepresentation]
 
-Messages = Union[Message, Sequence[Message]]
+Messages = Union[MessageLikeRepresentation, Sequence[MessageLikeRepresentation]]
 
 
 class SchemaInstance(NamedTuple):
@@ -307,7 +307,7 @@ def create_extractor(
             return "extract_updates"
         return "extract"
 
-    builder.add_conditional_edges(START, enter)
+    builder.add_conditional_edges("__start__", enter)
 
     def validate_or_retry(
         state: ExtractionState,
@@ -328,6 +328,9 @@ def create_extractor(
             return "__end__"
         # Only continue if we need to patch the tool call
         to_send = []
+        # We only increment the attempt count once, regardless of the fan-out
+        # degree.
+        bumped = False
         for m in reversed(state.messages):
             if isinstance(m, AIMessage):
                 break
@@ -345,10 +348,12 @@ def create_extractor(
                                     **asdict(state),
                                     "messages": messages_for_fixing,
                                     "tool_call_id": m.tool_call_id,
+                                    "bump_attempt": not bumped,
                                 }
                             ),
                         )
                     )
+                    bumped = True
                 else:
                     # We want to delete the validation tool calls
                     # anyway to avoid mixing branches during fan-in
@@ -366,6 +371,9 @@ def create_extractor(
         "validate", handle_retries, path_map=["__end__", "patch", "del_tool_call"]
     )
 
+    def sync(state: ExtractionState, config: RunnableConfig) -> dict:
+        return {"messages": []}
+
     def validate_or_repatch(
         state: ExtractionState,
     ) -> Literal["validate", "patch"]:
@@ -373,8 +381,11 @@ def create_extractor(
             return "validate"
         return "patch"
 
+    builder.add_node(sync)
+    builder.add_edge("patch", "sync")
+
     builder.add_conditional_edges(
-        "patch", validate_or_repatch, path_map=["validate", "patch", "__end__"]
+        "sync", validate_or_repatch, path_map=["validate", "patch", "__end__"]
     )
     compiled = builder.compile(checkpointer=False)
     compiled.name = "TrustCall"
@@ -852,14 +863,20 @@ class _Patch:
         )
 
     @ls.traceable(tags=["patch", "langsmith:hidden"])
-    def _tear_down(self, msg: AIMessage, messages: List[AnyMessage], target_id: str):
+    def _tear_down(
+        self,
+        msg: AIMessage,
+        messages: List[AnyMessage],
+        target_id: str,
+        bump_attempt: bool,
+    ):
         if not msg.id:
             msg.id = str(uuid.uuid4())
         # We will directly update the messages in the state before validation.
         msg_ops = _infer_patch_message_ops(messages, msg.tool_calls, target_id)
         return {
             "messages": msg_ops,
-            "attempts": 1,
+            "attempts": 1 if bump_attempt else 0,
         }
 
     async def ainvoke(
@@ -874,11 +891,15 @@ class _Patch:
 
         """
         msg = await self.bound.ainvoke(state.messages, config)
-        return self._tear_down(msg, state.messages, state.tool_call_id)
+        return self._tear_down(
+            msg, state.messages, state.tool_call_id, state.bump_attempt
+        )
 
     def invoke(self, state: ExtendedExtractState, config: RunnableConfig) -> dict:
         msg = self.bound.invoke(state.messages, config)
-        return self._tear_down(cast(AIMessage, msg), state.messages, state.tool_call_id)
+        return self._tear_down(
+            cast(AIMessage, msg), state.messages, state.tool_call_id, state.bump_attempt
+        )
 
     def as_runnable(self):
         return RunnableCallable(self.invoke, self.ainvoke, name="patch", trace=False)
@@ -923,22 +944,22 @@ class JsonPatch(BaseModel):
                 {
                     "op": "replace",
                     "path": "/path/to/my_array/1",
-                    "patch_value": "newer",
+                    "value": "the newer value to be patched",
                 },
                 {
                     "op": "replace",
                     "path": "/path/to/broken_object",
-                    "patch_value": {"new": "object"},
+                    "value": {"new": "object"},
                 },
                 {
                     "op": "add",
                     "path": "/path/to/my_array/-",
-                    "patch_value": ["some", "values"],
+                    "value": ["some", "values"],
                 },
                 {
                     "op": "add",
                     "path": "/path/to/my_array/-",
-                    "patch_value": ["newer"],
+                    "value": ["newer"],
                 },
                 {
                     "op": "remove",
@@ -1252,6 +1273,7 @@ class ExtractionState:
 class ExtendedExtractState(ExtractionState):
     tool_call_id: str = field(default="")
     """The ID of the tool call to be patched."""
+    bump_attempt: bool = field(default=False)
 
 
 @dataclass(kw_only=True)
