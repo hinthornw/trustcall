@@ -117,23 +117,22 @@ def _get_tool_as(style: str) -> Any:
 
     setattr(my_cool_injected_tool, "__name__", "my_cool_tool")
     setattr(my_cool_tool2, "__name__", "my_cool_tool")
-    match style:
-        case "fn":
-            return my_cool_tool
-        case "tool":
-            return tool_
-        case "schema":
-            return tool_.args_schema.schema()  # type: ignore
-        case "model":
-            return tool_.args_schema
-        case "typeddict":
-            return my_cool_tool2
-        case "injected_fn":
-            return my_cool_injected_tool
-        case "injected_tool":
-            return tool(my_cool_injected_tool)
-        case _:
-            raise ValueError(f"Invalid style: {style}")
+    if style == "fn":
+        return my_cool_tool
+    elif style == "tool":
+        return tool_
+    elif style == "schema":
+        return tool_.args_schema.schema()  # type: ignore
+    elif style == "model":
+        return tool_.args_schema
+    elif style == "typeddict":
+        return my_cool_tool2
+    elif style == "injected_fn":
+        return my_cool_injected_tool
+    elif style == "injected_tool":
+        return tool(my_cool_injected_tool)
+    else:
+        raise ValueError(f"Invalid style: {style}")
 
 
 def _get_tool_name(style: str) -> str:

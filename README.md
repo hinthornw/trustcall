@@ -1,5 +1,7 @@
 # 🤝trustcall
 
+[![CI](https://github.com/hinthornw/trustcall/actions/workflows/test.yml/badge.svg)](https://github.com/hinthornw/trustcall/actions/workflows/test.yml)
+
 ![](_static/cover.png)
 
 LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` solves this by asking the LLM to generate [JSON patch](https://datatracker.ietf.org/doc/html/rfc6902) operations. This is a simpler task that can be done iteratively. This enables:
@@ -10,7 +12,7 @@ LLMs struggle when asked to generate or modify large JSON blobs. `trustcall` sol
 
 Works flexibly across a number of common LLM workflows like:
 
-- ✂️ Extraction 
+- ✂️ Extraction
 - 🧭 LLM routing
 - 🤖 Multi-step agent tool use
 
@@ -40,6 +42,7 @@ Let's see a couple examples to see what we mean.
 ### Complex schema
 
 Take the following example:
+
 <details>
     <summary>Schema definition</summary>
 
@@ -88,6 +91,7 @@ Take the following example:
 
     class TelegramAndTrustFallPreferences(BaseModel):
         pertinent_user_preferences: UserPreferences
+
 </details>
     If you naively extract these values using `gpt-4o`, it's prone to failure:
 
@@ -259,6 +263,7 @@ class User(BaseModel):
 ```
 
 And set a starting profile state:
+
 <details>
 <summary>Starting profile</summary>
 
@@ -297,6 +302,7 @@ And set a starting profile state:
         pets=[Pet(kind="cat", name="Luna", age=3)],
         languages={"English": "native", "Spanish": "intermediate", "Python": "expert"},
     )
+
 </details>
 
 Giving the following conversation, we'd expect the memory to be **expanded** to include video gaming but not drop any other information:
@@ -421,6 +427,7 @@ print("\nTrustcall approach result:")
 trustcall_output = trustcall_result["responses"][0].model_dump()
 print(trustcall_output)
 ```
+
 Output:
 
 <details>
@@ -488,6 +495,7 @@ Output:
         "French": "beginner",
     },
     }
+
 </details>
 
 No fields omitted, and the important new information is seamlessly integrated.
@@ -588,6 +596,7 @@ for r, rmeta in zip(result["responses"], result["response_metadata"]):
     print(r.model_dump_json(indent=2))
     print()
 ```
+
 The LLM is able to update existing values while also inserting new ones!
 
 ```text
