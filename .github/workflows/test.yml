@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "python/**"
+      - "trustcall/**"
   pull_request:
     paths:
-      - "python/**"
+      - "trustcall/**"
   workflow_dispatch:
 
 env:
@@ -33,6 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync --all-extras --dev
+          uv pip install -e .
       - name: Build ${{ matrix.python-version }}
         run: uv run python setup.py sdist bdist_wheel
       - name: Lint ${{ matrix.python-version }}

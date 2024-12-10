@@ -187,7 +187,6 @@ class MetricProcessor:
 
 
 @pytest.mark.asyncio_cooperative
-@pytest.mark.timeout(600)
 @pytest.mark.parametrize(
     "model_name",
     [

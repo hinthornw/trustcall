@@ -31,6 +31,7 @@ jobs:
         run: |
           uv sync --all-extras --dev
           uv pip install -U pytest-asyncio vcrpy
+          uv pip install -e .
       - name: Run integration tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

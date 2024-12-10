@@ -21,14 +21,15 @@ dev = [
     "mypy<2.0.0,>=1.10.1",
     "pytest<9.0.0,>=8.2.2",
     "pytest-socket<1.0.0,>=0.7.0",
-    "pytest-xdist<4.0.0,>=3.6.1",
     "langchain<1.0,>=0.3",
     "langchain-openai<1.0,>=0.2",
     "langchain-fireworks<1.0,>=0.2",
     "langchain-anthropic<1.0,>=0.2",
     "vcrpy<7.0.0,>=6.0.1",
-    "pytest-asyncio>=0.23.7,<1.0.0",
-    "trustcall",
+    "pytest-watch>=4.2.0",
+    "pytest-xdist>=3.6.1",
+    "anyio>=4.7.0",
+    "pytest-asyncio-cooperative>=0.37.0",
 ]
 
 [tool.setuptools]
@@ -57,7 +58,19 @@ docstring-code-format = true
 docstring-code-line-length = 80
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+# --strict-markers will raise errors on unknown marks.
+# https://docs.pytest.org/en/7.1.x/how-to/mark.html#raising-errors-on-unknown-marks
+#
+# https://docs.pytest.org/en/7.1.x/reference/reference.html
+# --strict-config       any warnings encountered while parsing the `pytest`
+#                       section of the configuration file raise errors.
+addopts = "--strict-markers --strict-config --durations=5 -vv"
+
 
 [tool.uv.sources]
 trustcall = { workspace = true }
+
+[tool.pytest-watcher]
+now = true
+delay = 3
+patterns = ["*.py"]
