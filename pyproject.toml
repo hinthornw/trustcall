@@ -10,7 +10,7 @@ dependencies = [
     "jsonpatch<2.0,>=1.33",
 ]
 name = "trustcall"
-version = "0.0.26"
+version = "0.0.27"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 readme = "README.md"
 
@@ -31,6 +31,7 @@ dev = [
     "anyio>=4.7.0",
     "pytest-asyncio-cooperative>=0.37.0",
 ]
+standard = ["langchain>=0.3"]
 
 [tool.setuptools]
 packages = ["trustcall"]

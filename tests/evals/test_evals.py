@@ -5,7 +5,6 @@ from typing import Optional, Sequence, cast
 import langsmith as ls
 import pytest
 from dydantic import create_model_from_schema
-from langchain.chat_models import init_chat_model
 from langsmith import aevaluate, expect, traceable
 from langsmith.evaluation import EvaluationResults
 from langsmith.schemas import Example, Run
@@ -61,8 +60,7 @@ async def predict_with_model(
         ),
         ("user", inputs["input_str"]),
     ]
-    llm = init_chat_model(model_name, temperature=0.8)
-    extractor = create_extractor(llm, tools=[tool_def], tool_choice=tool_def["name"])
+    extractor = create_extractor(model_name, tools=[tool_def], tool_choice=tool_def["name"])
     existing = inputs.get("current_value", {})
     extractor_inputs: dict = {"messages": messages}
     if existing:
@@ -226,7 +224,7 @@ async def test_simple() -> None:
         return "I am a document."
 
     extractor = create_extractor(
-        init_chat_model("gpt-4o"), tools=[query_docs], tool_choice="query_docs"
+        "gpt-4o", tools=[query_docs], tool_choice="query_docs"
     )
     extractor.invoke({"messages": [("user", "What are the docs about?")]})
 
@@ -246,8 +244,9 @@ async def test_multi_tool() -> None:
                 )
             return v
 
-    llm = init_chat_model("gpt-4o-mini")
-    extractor = create_extractor(llm, tools=[query_docs], tool_choice="any")
+    extractor = create_extractor(
+        "gpt-4o", tools=[query_docs], tool_choice="any"
+    )
     extractor.invoke(
         {
             "messages": [
