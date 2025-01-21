@@ -119,7 +119,7 @@ class ExtractionOutputs(TypedDict):
 
 
 def create_extractor(
-    llm: BaseChatModel,
+    llm: str | BaseChatModel,
     *,
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
@@ -258,6 +258,17 @@ def create_extractor(
         ...     }
         ... )
     """  # noqa
+    if isinstance(llm, str):
+        try:
+            from langchain.chat_models import init_chat_model
+        except ImportError:
+            raise ImportError(
+                "Creating extractors from a string requires langchain>=0.3.0,"
+                " as well as the provider-specific package"
+                " (like langchain-openai, langchain-anthropic, etc.)"
+                " Please install langchain to continue."
+            )
+        llm = init_chat_model(llm)
     builder = StateGraph(ExtractionState)
 
     def format_exception(error: BaseException, call: ToolCall, schema: Type[BaseModel]):

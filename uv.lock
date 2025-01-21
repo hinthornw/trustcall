@@ -1658,7 +1658,7 @@ wheels = [
 
 [[package]]
 name = "trustcall"
-version = "0.0.26"
+version = "0.0.27"
 source = { virtual = "." }
 dependencies = [
     { name = "dydantic" },
@@ -1681,6 +1681,9 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "vcrpy" },
+]
+standard = [
+    { name = "langchain" },
 ]
 
 [package.metadata]
@@ -1706,6 +1709,7 @@ dev = [
     { name = "ruff", specifier = ">=0.4.10,<1.0.0" },
     { name = "vcrpy", specifier = ">=6.0.1,<7.0.0" },
 ]
+standard = [{ name = "langchain", specifier = ">=0.3" }]
 
 [[package]]
 name = "typing-extensions"
