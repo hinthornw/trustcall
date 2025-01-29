@@ -124,6 +124,7 @@ def create_extractor(
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
     enable_inserts: bool = False,
+    existing_schema_policy: bool | Literal["ignore"] = True,
 ) -> Runnable[InputsLike, ExtractionOutputs]:
     """Create an extractor that generates validated structured outputs using an LLM.
 
@@ -141,6 +142,10 @@ def create_extractor(
             on the input messages. (default: None)
         enable_inserts (bool): Whether to allow the LLM to extract new schemas
             even if it receives existing schemas. (default: False)
+        existing_schema_policy (bool | Literal["ignore"]): How to handle existing schemas
+            that don't match the provided tool. Useful for migrating or managing heterogenous
+            docs. (default: True) True means raise error. False means treat as dict.
+            "ignore" means ignore (drop any attempts to patch these)
 
     Returns:
         Runnable[ExtractionInputs, ExtractionOutputs]: A runnable that
@@ -274,7 +279,7 @@ def create_extractor(
     def format_exception(error: BaseException, call: ToolCall, schema: Type[BaseModel]):
         return (
             f"Error:\n\n```\n{str(error)}\n```\n"
-            "Expected Parameter Schema:\n\n" + f"```json\n{ _get_schema(schema)}\n```\n"
+            "Expected Parameter Schema:\n\n" + f"```json\n{_get_schema(schema)}\n```\n"
             f"Please use PatchFunctionErrors to fix all validation errors."
             f" for json_doc_id=[{call['id']}]."
         )
@@ -296,13 +301,13 @@ def create_extractor(
             tool_choice,
         ).as_runnable()
     )
-    builder.add_node(
-        _ExtractUpdates(
-            llm,
-            tools=validator.schemas_by_name.copy(),
-            enable_inserts=enable_inserts,  # type: ignore
-        ).as_runnable()
+    updater = _ExtractUpdates(
+        llm,
+        tools=validator.schemas_by_name.copy(),
+        enable_inserts=enable_inserts,  # type: ignore
+        existing_schema_policy=existing_schema_policy,
     )
+    builder.add_node(updater.as_runnable())
     builder.add_node(_Patch(llm, valid_tool_names=tool_names).as_runnable())
     builder.add_node("validate", validator)
 
@@ -423,6 +428,9 @@ def create_extractor(
         response_metadata = []
         updated_docs = msg.additional_kwargs.get("updated_docs") or {}
         for tc in msg.tool_calls:
+            if tc["name"] not in validator.schemas_by_name:
+                if existing_schema_policy in (False, "ignore"):
+                    continue
             sch = validator.schemas_by_name[tc["name"]]
             responses.append(
                 sch.model_validate(tc["args"])
@@ -632,6 +640,7 @@ class _ExtractUpdates:
         llm: BaseChatModel,
         tools: Mapping[str, Type[BaseModel]],
         enable_inserts: bool = False,
+        existing_schema_policy: bool | Literal["ignore"] = True,
     ):
         new_tools: list = [PatchDoc]
         tool_choice = PatchDoc.__name__
@@ -646,23 +655,27 @@ class _ExtractUpdates:
         self.enable_inserts = enable_inserts
         self.bound = llm.bind_tools(new_tools, tool_choice=tool_choice)
         self.tools = tools
+        self.existing_schema_policy = existing_schema_policy
 
-    @ls.traceable
+    @ls.traceable(tags=["langsmith:hidden"])
     def _setup(self, state: ExtractionState):
         messages = state.messages
         existing = state.existing
         if not existing:
             raise ValueError("No existing schemas provided.")
-        existing = self._validate_existing(existing)
+        existing = self._validate_existing(existing)  # type: ignore[assignment]
         schema_strings = []
         if isinstance(existing, dict):
             for k, v in existing.items():
-                schema = self.tools[k]
-                schema_json = schema.model_json_schema()
-                schema_str = f"""
-<json_schema>
-{schema_json}
-</json_schema>
+                if k not in self.tools and self.existing_schema_policy is False:
+                    schema_str = "object"
+                else:
+                    schema = self.tools[k]
+                    schema_json = schema.model_json_schema()
+                    schema_str = f"""
+    <json_schema>
+    {schema_json}
+    </json_schema>
 """
                 schema_strings.append(
                     f"<schema id={k}>\n<instance>\n{v}\n"
@@ -721,7 +734,8 @@ class _ExtractUpdates:
                         )
                         if not tool_name:
                             raise ValueError(
-                                f"Could not find tool name for json_doc_id {json_doc_id}"
+                                "Could not find tool name "
+                                f"for json_doc_id {json_doc_id}"
                             )
                     except StopIteration:
                         logger.error(
@@ -782,77 +796,136 @@ class _ExtractUpdates:
     def _provided_tools(self):
         return sorted(self.tools.keys() - {"PatchDoc", "PatchFunctionErrors"})
 
-    def _validate_existing(self, existing: ExistingType):
+    def _validate_existing(
+        self, existing: ExistingType
+    ) -> Union[Dict[str, Any], List[SchemaInstance]]:
+        """Check that all existing schemas match a known schema or '__any__'."""
         if isinstance(existing, dict):
-            # Validate that all keys in existing match a tool name
-            for key in existing.keys():
-                if key not in self.tools:
-                    raise ValueError(
-                        f"Key '{key}' in existing does not match any tool"
-                        f" name. Provided: {existing}, Expected: A dictionary"
-                        " with keys matching one of the provided tool names:"
-                        f" {self._provided_tools}"
-                    )
-            return existing
-        if isinstance(existing, list):
+            # For each top-level key, see if it's recognized
+            validated = {}
+            for key, record in existing.items():
+                if key in self.tools or key == "__any__":
+                    validated[key] = record
+                else:
+                    # Key does not match known schema
+                    if self.existing_schema_policy is True:
+                        raise ValueError(
+                            f"Key '{key}' doesn't match any schema. "
+                            f"Known schemas: {list(self.tools.keys())}"
+                        )
+                    elif self.existing_schema_policy is False:
+                        validated[key] = record
+                    else:  # "ignore"
+                        logger.warning(f"Ignoring unknown schema: {key}")
+            return validated
+
+        elif isinstance(existing, list):
             # For list types, validate each item's schema_name
             coerced = []
             for i, item in enumerate(existing):
                 if isinstance(item, SchemaInstance):
-                    if item.schema_name not in self.tools:
-                        raise ValueError(
-                            f"Schema name '{item.schema_name}'"
-                            f" at index {i} does not match any tool "
-                            f"name. Provided: {item}, Expected: SchemaInstance"
-                            f" with schema_name in {self._provided_tools}"
-                        )
-                    coerced.append(coerced)
+                    if (
+                        item.schema_name not in self.tools
+                        and item.schema_name != "__any__"
+                    ):
+                        if self.existing_schema_policy is True:
+                            raise ValueError(
+                                f"Unknown schema '{item.schema_name}' at index {i}"
+                            )
+                        elif self.existing_schema_policy is False:
+                            coerced.append(
+                                SchemaInstance(
+                                    item.record_id, item.schema_name, item.record
+                                )
+                            )
+                        else:  # "ignore"
+                            logger.warning(f"Ignoring unknown schema at index {i}")
+                            continue
+                    else:
+                        coerced.append(item)
                 elif isinstance(item, tuple) and len(item) == 3:
-                    if item[1] not in self.tools:
-                        raise ValueError(
-                            f"Schema name '{item[1]}' at index {i} does"
-                            f" not match any tool name. Provided: {item},"
-                            f" Expected: Tuple(str, str, dict) with second"
-                            f" element in {self._provided_tools}"
+                    record_id, schema_name, record_dict = item
+                    if schema_name not in self.tools and schema_name != "__any__":
+                        if self.existing_schema_policy is True:
+                            raise ValueError(
+                                f"Unknown schema '{schema_name}' at index {i}"
+                            )
+                        elif self.existing_schema_policy is False:
+                            coerced.append(
+                                SchemaInstance(record_id, schema_name, record_dict)
+                            )
+                        else:  # "ignore"
+                            logger.warning(f"Ignoring unknown schema '{schema_name}'")
+                            continue
+                    else:
+                        coerced.append(
+                            SchemaInstance(record_id, schema_name, record_dict)
                         )
-                    coerced.append(SchemaInstance(item[0], item[1], item[2]))
                 elif isinstance(item, tuple) and len(item) == 2:
                     # Assume record_ID, item
-                    if hasattr(item[1], "__name__"):
-                        schema_name = item[1].__name__
+                    record_id, model = item
+                    if hasattr(model, "__name__"):
+                        schema_name = model.__name__
                     else:
-                        schema_name = item[1].__repr_name__()
+                        schema_name = model.__repr_name__()
 
-                    if schema_name not in self.tools:
-                        raise ValueError(
-                            f"Schema name '{schema_name}' at index {i} does"
-                            f" not match any tool name. Provided: {item},"
-                            f" Expected: Tuple(str, str, dict) with second"
-                            f" element in {self._provided_tools}"
+                    if schema_name not in self.tools and schema_name != "__any__":
+                        if self.existing_schema_policy is True:
+                            raise ValueError(
+                                f"Unknown schema '{schema_name}' at index {i}"
+                            )
+                        elif self.existing_schema_policy is False:
+                            val = (
+                                model.model_dump(mode="json")
+                                if isinstance(model, BaseModel)
+                                else model
+                            )
+                            coerced.append(SchemaInstance(record_id, schema_name, val))
+                        else:  # "ignore"
+                            logger.warning(f"Ignoring unknown schema '{schema_name}'")
+                            continue
+                    else:
+                        val = (
+                            model.model_dump(mode="json")
+                            if isinstance(model, BaseModel)
+                            else model
                         )
-                    val = (
-                        item[1].model_dump(mode="json")
-                        if isinstance(item[1], BaseModel)
-                        else item[1]
-                    )
-                    coerced.append(SchemaInstance(item[0], schema_name, val))
+                        coerced.append(SchemaInstance(record_id, schema_name, val))
                 elif isinstance(item, BaseModel):
                     if hasattr(item, "__name__"):
                         schema_name = item.__name__
                     else:
                         schema_name = item.__repr_name__()
-                    coerced.append(
-                        SchemaInstance(
-                            str(uuid.uuid4()),
-                            schema_name,
-                            item.model_dump(mode="json"),
+
+                    if schema_name not in self.tools and schema_name != "__any__":
+                        if self.existing_schema_policy is True:
+                            raise ValueError(
+                                f"Unknown schema '{schema_name}' at index {i}"
+                            )
+                        elif self.existing_schema_policy is False:
+                            coerced.append(
+                                SchemaInstance(
+                                    str(uuid.uuid4()),
+                                    schema_name,
+                                    item.model_dump(mode="json"),
+                                )
+                            )
+                        else:  # "ignore"
+                            logger.warning(f"Ignoring unknown schema '{schema_name}'")
+                            continue
+                    else:
+                        coerced.append(
+                            SchemaInstance(
+                                str(uuid.uuid4()),
+                                schema_name,
+                                item.model_dump(mode="json"),
+                            )
                         )
-                    )
                 else:
                     raise ValueError(
                         f"Invalid item at index {i} in existing list."
                         f" Provided: {item}, Expected: SchemaInstance"
-                        f" or Tuple(str, str, dict) or BaseModel"
+                        f" or Tuple[str, str, dict] or BaseModel"
                     )
             return coerced
         else:
@@ -1357,7 +1430,7 @@ class _ExtendedValidationNode(ValidationNode):
             except KeyError:
                 valid_names = ", ".join(self.schemas_by_name.keys())
                 return ToolMessage(
-                    content=f"Unrecognized tool name: \"{call['name']}\". You only have"
+                    content=f'Unrecognized tool name: "{call["name"]}". You only have'
                     f" access to the following tools: {valid_names}."
                     " Please call PatchFunctionName with the *correct* tool name"
                     f" to fix json_doc_id=[{call['id']}].",

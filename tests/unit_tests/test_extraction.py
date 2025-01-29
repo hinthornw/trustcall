@@ -418,3 +418,236 @@ def test_validate_existing(existing, tools, is_valid):
     else:
         with pytest.raises(ValueError):
             extractor._validate_existing(existing)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict_mode", [True, False, "ignore"])
+async def test_e2e_existing_schema_policy_behavior(strict_mode):
+    class MyRecognizedSchema(BaseModel):
+        """A recognized schema that the pipeline can handle."""
+
+        user_id: str
+        notes: str
+
+    # Our existing data includes 2 top-level keys: recognized, unknown
+    existing_schemas = {
+        "MyRecognizedSchema": {"user_id": "abc", "notes": "original notes"},
+        "UnknownSchema": {"random_field": "???"},
+    }
+
+    # The AI's single message calls PatchDoc on both recognized + unknown
+    recognized_patch_id = str(uuid.uuid4())
+    unknown_patch_id = str(uuid.uuid4())
+
+    ai_msg = AIMessage(
+        content="I want to patch both recognized and unknown schema.",
+        tool_calls=[
+            {
+                "id": recognized_patch_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "MyRecognizedSchema",
+                    "planned_edits": "update recognized doc",
+                    "patches": [
+                        {"op": "replace", "path": "/notes", "value": "updated notes"},
+                    ],
+                },
+            },
+            {
+                "id": unknown_patch_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "UnknownSchema",
+                    "planned_edits": "update unknown doc",
+                    "patches": [
+                        {
+                            "op": "replace",
+                            "path": "/random_field",
+                            "value": "now recognized?",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    # LLM returns just this single message
+    fake_llm = FakeExtractionModel(responses=[ai_msg], backup_responses=[ai_msg] * 10)
+
+    # 3. Create the extractor with recognized schema, override existing_schema_policy
+    extractor = create_extractor(
+        llm=fake_llm,
+        tools=[MyRecognizedSchema],
+        enable_inserts=False,
+        existing_schema_policy=strict_mode,
+    )
+
+    inputs = {
+        "messages": [
+            ("system", "System instructions"),
+            ("user", "Update these docs, please!"),
+        ],
+        "existing": existing_schemas,
+    }
+    if strict_mode is True:
+        with pytest.raises(
+            ValueError, match="Key 'UnknownSchema' doesn't match any schema"
+        ):
+            await extractor.ainvoke(inputs)
+        return
+
+    result = await extractor.ainvoke(inputs)
+    # The pipeline returns a dict with "messages", "responses", etc.
+    # We should have exactly 1 final AIMessage (the one from fake_llm).
+    assert len(result["messages"]) == 1
+    final_msg = result["messages"][0]
+    assert isinstance(final_msg, AIMessage)
+
+    recognized_call = next(
+        (tc for tc in final_msg.tool_calls if tc["id"] == recognized_patch_id), None
+    )
+    assert recognized_call, "Missing recognized schema patch from final messages"
+    assert recognized_call["args"]["notes"] == "updated notes", (
+        "Recognized schema wasn't updated"
+    )
+
+    # For the unknown schema:
+    unknown_call = next(
+        (tc for tc in final_msg.tool_calls if tc["id"] == unknown_patch_id), None
+    )
+    if strict_mode == "ignore":
+        assert unknown_call is None, (
+            "Unknown schema patch should be skipped in 'ignore' mode"
+        )
+        return
+
+    assert unknown_call["args"] == {"random_field": "now recognized?"}, (
+        "Unknown schema should still be updated in strict_mode=False"
+    )
+
+    recognized_responses = [
+        r for r in result["responses"] if getattr(r, "user_id", None) == "abc"
+    ]
+    assert len(result["responses"]) == 1
+    assert len(recognized_responses) == 1
+    recognized_item = recognized_responses[0]
+    # user_id = "abc", notes = "updated notes"
+    assert recognized_item.notes == "updated notes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict_mode", [True, False, "ignore"])
+async def test_e2e_existing_schema_policy_tuple_behavior(strict_mode):
+    class MyRecognizedSchema(BaseModel):
+        """A recognized schema that the pipeline can handle."""
+
+        user_id: str
+        notes: str
+
+    existing_schemas = [
+        (
+            "rec_id_1",
+            "MyRecognizedSchema",
+            {"user_id": "abc", "notes": "original notes"},
+        ),
+        ("rec_id_2", "UnknownSchema", {"random_field": "???"}),
+    ]
+
+    recognized_patch_id = str(uuid.uuid4())
+    unknown_patch_id = str(uuid.uuid4())
+
+    ai_msg = AIMessage(
+        content="I want to patch recognized and unknown schemas.",
+        tool_calls=[
+            {
+                "id": recognized_patch_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "rec_id_1",
+                    "planned_edits": "update recognized doc",
+                    "patches": [
+                        {"op": "replace", "path": "/notes", "value": "updated notes"},
+                    ],
+                },
+            },
+            {
+                "id": unknown_patch_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "rec_id_2",
+                    "planned_edits": "update unknown doc",
+                    "patches": [
+                        {
+                            "op": "replace",
+                            "path": "/random_field",
+                            "value": "now recognized?",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    # LLM returns just this single message
+    fake_llm = FakeExtractionModel(responses=[ai_msg], backup_responses=[ai_msg] * 3)
+
+    # Create the extractor with one recognized schema, override existing_schema_policy
+    extractor = create_extractor(
+        llm=fake_llm,
+        tools=[MyRecognizedSchema],
+        enable_inserts=False,
+        existing_schema_policy=strict_mode,
+    )
+
+    inputs = {
+        "messages": [
+            ("system", "System instructions"),
+            ("user", "Update these docs, please!"),
+        ],
+        "existing": existing_schemas,
+    }
+
+    if strict_mode is True:
+        with pytest.raises(
+            ValueError, match="Unknown schema 'UnknownSchema' at index 1"
+        ):
+            await extractor.ainvoke(inputs)
+        return
+
+    # Otherwise, we proceed
+    result = await extractor.ainvoke(inputs)
+    assert len(result["messages"]) == 1
+    final_msg = result["messages"][0]
+    assert isinstance(final_msg, AIMessage)
+
+    recognized_call = next(
+        (tc for tc in final_msg.tool_calls if tc["id"] == recognized_patch_id), None
+    )
+    assert recognized_call, "Missing recognized schema patch from final messages"
+    assert recognized_call["args"]["notes"] == "updated notes"
+
+    # Confirm how unknown schema was handled
+    unknown_call = next(
+        (tc for tc in final_msg.tool_calls if tc["id"] == unknown_patch_id), None
+    )
+    if strict_mode == "ignore":
+        # The unknown patch should be dropped
+        assert unknown_call is None, (
+            "Unknown schema patch should be skipped in 'ignore' mode"
+        )
+        # Only recognized schema remains
+        assert len(result["responses"]) == 1
+        recognized_item = result["responses"][0]
+        assert recognized_item.notes == "updated notes"
+        return
+
+    # If strict_mode == False, unknown schema is carried along as a raw object
+    assert unknown_call is not None
+    assert unknown_call["args"] == {"random_field": "now recognized?"}
+    # We do still get 1 recognized response object
+    recognized_responses = [
+        r for r in result["responses"] if getattr(r, "user_id", None) == "abc"
+    ]
+    assert len(recognized_responses) == 1
+    recognized_item = recognized_responses[0]
+    assert recognized_item.notes == "updated notes"

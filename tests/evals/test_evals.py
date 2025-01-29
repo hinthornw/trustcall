@@ -60,7 +60,9 @@ async def predict_with_model(
         ),
         ("user", inputs["input_str"]),
     ]
-    extractor = create_extractor(model_name, tools=[tool_def], tool_choice=tool_def["name"])
+    extractor = create_extractor(
+        model_name, tools=[tool_def], tool_choice=tool_def["name"]
+    )
     existing = inputs.get("current_value", {})
     extractor_inputs: dict = {"messages": messages}
     if existing:
@@ -223,9 +225,7 @@ async def test_simple() -> None:
     def query_docs(query: str) -> str:
         return "I am a document."
 
-    extractor = create_extractor(
-        "gpt-4o", tools=[query_docs], tool_choice="query_docs"
-    )
+    extractor = create_extractor("gpt-4o", tools=[query_docs], tool_choice="query_docs")
     extractor.invoke({"messages": [("user", "What are the docs about?")]})
 
 
@@ -244,9 +244,7 @@ async def test_multi_tool() -> None:
                 )
             return v
 
-    extractor = create_extractor(
-        "gpt-4o", tools=[query_docs], tool_choice="any"
-    )
+    extractor = create_extractor("gpt-4o", tools=[query_docs], tool_choice="any")
     extractor.invoke(
         {
             "messages": [
