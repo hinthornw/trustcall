@@ -6,11 +6,11 @@ license = { text = "MIT" }
 requires-python = "<4.0,>=3.10"
 dependencies = [
     "langgraph>=0.2.25",
-    "dydantic<1.0.0,>=0.0.7",
+    "dydantic<1.0.0,>=0.0.8",
     "jsonpatch<2.0,>=1.33",
 ]
 name = "trustcall"
-version = "0.0.29"
+version = "0.0.30"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 readme = "README.md"
 
