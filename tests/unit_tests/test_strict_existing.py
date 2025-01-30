@@ -308,6 +308,8 @@ def test_validate_existing_strictness(
         if isinstance(coerced, dict):
             assert all(k in tools or k == "__any__" for k in coerced)
         elif isinstance(coerced, list):
-            assert all(s.schema_name in tools or s.schema_name == "__any__" for s in coerced)
+            assert all(
+                s.schema_name in tools or s.schema_name == "__any__" for s in coerced
+            )
     elif existing_schema_policy is False:
-        pass 
+        pass
