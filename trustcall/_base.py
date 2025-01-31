@@ -643,7 +643,7 @@ class _ExtractUpdates:
         existing_schema_policy: bool | Literal["ignore"] = True,
     ):
         new_tools: list = [PatchDoc]
-        tool_choice = PatchDoc.__name__
+        tool_choice = {"type": "function", "function": {"name": "PatchDoc"}}
         if enable_inserts:  # Also let the LLM know that we can extract NEW schemas.
             tools_ = [
                 schema
