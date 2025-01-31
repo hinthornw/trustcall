@@ -422,14 +422,13 @@ def test_validate_existing(existing, tools, is_valid):
             extractor._validate_existing(existing)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("strict_mode", [True, False, "ignore"])
 async def test_e2e_existing_schema_policy_behavior(strict_mode):
     class MyRecognizedSchema(BaseModel):
         """A recognized schema that the pipeline can handle."""
 
-        user_id: str
-        notes: str
+        user_id: str  # type: ignore
+        notes: str  # type: ignore
 
     # Our existing data includes 2 top-level keys: recognized, unknown
     existing_schemas = {
@@ -537,14 +536,13 @@ async def test_e2e_existing_schema_policy_behavior(strict_mode):
     assert recognized_item.notes == "updated notes"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("strict_mode", [True, False, "ignore"])
 async def test_e2e_existing_schema_policy_tuple_behavior(strict_mode):
     class MyRecognizedSchema(BaseModel):
         """A recognized schema that the pipeline can handle."""
 
-        user_id: str
-        notes: str
+        user_id: str  # type: ignore
+        notes: str  # type: ignore
 
     existing_schemas = [
         (
@@ -655,7 +653,6 @@ async def test_e2e_existing_schema_policy_tuple_behavior(strict_mode):
     assert recognized_item.notes == "updated notes"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("enable_inserts", [True, False])
 async def test_enable_deletes_flow(enable_inserts: bool) -> None:
     class MySchema(BaseModel):

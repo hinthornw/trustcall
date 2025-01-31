@@ -1,4 +1,5 @@
 import logging
+from unittest.mock import patch
 
 import pytest
 from langchain_openai import ChatOpenAI
@@ -260,7 +261,8 @@ def test_validate_existing_strictness(
 ):
     """Test various scenarios of validation."""
     tools = {"DummySchema": DummySchema}
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "fake-api-key"}):
+        llm = ChatOpenAI(model="gpt-4o-mini")
     extractor = _ExtractUpdates(
         llm=llm,  # We won't actually call the LLM here but we need it for parsing.
         tools=tools,

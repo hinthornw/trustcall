@@ -10,7 +10,7 @@ dependencies = [
     "jsonpatch<2.0,>=1.33",
 ]
 name = "trustcall"
-version = "0.0.32"
+version = "0.0.34"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 readme = "README.md"
 
