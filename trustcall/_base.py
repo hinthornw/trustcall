@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import logging
 import operator
 import uuid
 from dataclasses import asdict, dataclass, field
+from json import JSONDecodeError
 from typing import (
     Any,
     Callable,
@@ -43,6 +45,7 @@ from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_f
 from langgraph.constants import Send
 from langgraph.graph import StateGraph, add_messages
 from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
+from langgraph.types import Command
 from langgraph.utils.runnable import RunnableCallable
 from pydantic import (
     BaseModel,
@@ -52,6 +55,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     create_model,
+    field_validator,
 )
 from typing_extensions import Annotated, TypedDict, get_args, get_origin, is_typeddict
 
@@ -124,6 +128,7 @@ def create_extractor(
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
     enable_inserts: bool = False,
+    enable_deletes: bool = False,
     existing_schema_policy: bool | Literal["ignore"] = True,
 ) -> Runnable[InputsLike, ExtractionOutputs]:
     """Create an extractor that generates validated structured outputs using an LLM.
@@ -142,6 +147,8 @@ def create_extractor(
             on the input messages. (default: None)
         enable_inserts (bool): Whether to allow the LLM to extract new schemas
             even if it receives existing schemas. (default: False)
+        enable_deletes (bool): Whether to allow the LLM to delete existing schemas
+            using the RemoveDoc tool. (default: False)
         existing_schema_policy (bool | Literal["ignore"]): How to handle existing schemas
             that don't match the provided tool. Useful for migrating or managing heterogenous
             docs. (default: True) True means raise error. False means treat as dict.
@@ -287,6 +294,7 @@ def create_extractor(
     validator = _ExtendedValidationNode(
         ensure_tools(tools) + [PatchDoc, PatchFunctionErrors],
         format_error=format_exception,  # type: ignore
+        enable_deletes=enable_deletes,
     )
     _extract_tools = [
         schema
@@ -305,6 +313,7 @@ def create_extractor(
         llm,
         tools=validator.schemas_by_name.copy(),
         enable_inserts=enable_inserts,  # type: ignore
+        enable_deletes=enable_deletes,  # type: ignore
         existing_schema_policy=existing_schema_policy,
     )
     builder.add_node(updater.as_runnable())
@@ -351,7 +360,7 @@ def create_extractor(
             if isinstance(m, AIMessage):
                 break
             if isinstance(m, ToolMessage):
-                if m.additional_kwargs.get("is_error"):
+                if m.status == "error":
                     # Each fallback will fix at most 1 schema per time.
                     messages_for_fixing = _get_history_for_tool_call(
                         state.messages, m.tool_call_id
@@ -398,7 +407,6 @@ def create_extractor(
         return "patch"
 
     builder.add_node(sync)
-    builder.add_edge("patch", "sync")
 
     builder.add_conditional_edges(
         "sync", validate_or_repatch, path_map=["validate", "patch", "__end__"]
@@ -427,20 +435,32 @@ def create_extractor(
         responses = []
         response_metadata = []
         updated_docs = msg.additional_kwargs.get("updated_docs") or {}
+        existing = state.get("existing")
+        removal_schema = None
+        if enable_deletes and existing:
+            removal_schema = _create_remove_doc_from_existing(existing)
         for tc in msg.tool_calls:
-            if tc["name"] not in validator.schemas_by_name:
+            if removal_schema and tc["name"] == removal_schema.__name__:
+                sch = removal_schema
+            elif tc["name"] not in validator.schemas_by_name:
                 if existing_schema_policy in (False, "ignore"):
                     continue
-            sch = validator.schemas_by_name[tc["name"]]
-            responses.append(
-                sch.model_validate(tc["args"])
-                if hasattr(sch, "model_validate")
-                else sch.parse_obj(tc["args"])
-            )
-            meta = {"id": tc["id"]}
-            if json_doc_id := updated_docs.get(tc["id"]):
-                meta["json_doc_id"] = json_doc_id
-            response_metadata.append(meta)
+                sch = validator.schemas_by_name[tc["name"]]
+            else:
+                sch = validator.schemas_by_name[tc["name"]]
+            try:
+                responses.append(
+                    sch.model_validate(tc["args"])
+                    if hasattr(sch, "model_validate")
+                    else sch.parse_obj(tc["args"])
+                )
+                meta = {"id": tc["id"]}
+                if json_doc_id := updated_docs.get(tc["id"]):
+                    meta["json_doc_id"] = json_doc_id
+                response_metadata.append(meta)
+            except Exception as e:
+                logger.error(e)
+                continue
 
         return {
             "messages": [msg],
@@ -640,10 +660,11 @@ class _ExtractUpdates:
         llm: BaseChatModel,
         tools: Mapping[str, Type[BaseModel]],
         enable_inserts: bool = False,
+        enable_deletes: bool = False,
         existing_schema_policy: bool | Literal["ignore"] = True,
     ):
         new_tools: list = [PatchDoc]
-        tool_choice = {"type": "function", "function": {"name": "PatchDoc"}}
+        tool_choice = {"type": "function", "function": {"name": "PatchDoc"}} if not enable_deletes else "any"
         if enable_inserts:  # Also let the LLM know that we can extract NEW schemas.
             tools_ = [
                 schema
@@ -653,8 +674,11 @@ class _ExtractUpdates:
             new_tools.extend(tools_)
             tool_choice = "any"
         self.enable_inserts = enable_inserts
+        self.bound_tools = new_tools
+        self.tool_choice = tool_choice
         self.bound = llm.bind_tools(new_tools, tool_choice=tool_choice)
-        self.tools = tools
+        self.enable_deletes = enable_deletes
+        self.tools = dict(tools) | {schema_.__name__: schema_ for schema_ in new_tools}
         self.existing_schema_policy = existing_schema_policy
 
     @ls.traceable(tags=["langsmith:hidden"])
@@ -710,9 +734,19 @@ class _ExtractUpdates:
                 ]
         else:
             system_message = SystemMessage(content=existing_msg)
-        return [system_message] + messages, existing
+        removal_schema = None
+        if self.enable_deletes and existing:
+            removal_schema = _create_remove_doc_from_existing(existing)
+            bound_model = self.bound.bound.bind_tools(  # type: ignore
+                self.bound_tools + [removal_schema],
+                tool_choice=self.tool_choice,
+            )
+        else:
+            bound_model = self.bound
 
-    @ls.traceable
+        return [system_message] + messages, existing, removal_schema, bound_model
+
+    @ls.traceable(tags=["langsmith:hidden"])
     def _teardown(
         self,
         msg: AIMessage,
@@ -763,12 +797,12 @@ class _ExtractUpdates:
                                 id=tc["id"],
                                 name=tool_name,
                                 args=jsonpatch.apply_patch(
-                                    target, tc["args"]["patches"]
+                                    target, _ensure_patches(tc["args"])
                                 ),
                             )
                         )
                         updated_docs[tc["id"]] = str(json_doc_id)
-                    except jsonpatch.JsonPatchConflict as e:
+                    except (jsonpatch.JsonPatchConflict, JSONDecodeError) as e:
                         logger.error(f"Could not apply patch: {e}")
                         if rt:
                             rt.error = f"Could not apply patch: {repr(e)}"
@@ -845,6 +879,8 @@ class _ExtractUpdates:
                         coerced.append(item)
                 elif isinstance(item, tuple) and len(item) == 3:
                     record_id, schema_name, record_dict = item
+                    if isinstance(record_dict, BaseModel):
+                        record_dict = record_dict.model_dump(mode="json")
                     if schema_name not in self.tools and schema_name != "__any__":
                         if self.existing_schema_policy is True:
                             raise ValueError(
@@ -942,10 +978,13 @@ class _ExtractUpdates:
         Returns a single AIMessage with the updated schema, as if
             the schema were extracted from scratch.
         """
-        messages, existing = self._setup(state)
+        messages, existing, removal_schema, bound_model = self._setup(state)
         try:
-            msg = await self.bound.ainvoke(messages, config)
-            return self._teardown(cast(AIMessage, msg), existing)
+            msg = await bound_model.ainvoke(messages, config)
+            return {
+                **self._teardown(cast(AIMessage, msg), existing),
+                "removal_schema": removal_schema,
+            }
         except Exception as e:
             return {
                 "messages": [
@@ -958,10 +997,10 @@ class _ExtractUpdates:
             }
 
     def invoke(self, state: ExtractionState, config: RunnableConfig) -> dict:
-        messages, existing = self._setup(state)
+        messages, existing, removal_schema, bound_model = self._setup(state)
         try:
-            msg = self.bound.invoke(messages, config)
-            return self._teardown(msg, existing)
+            msg = bound_model.invoke(messages, config)
+            return {**self._teardown(msg, existing), "removal_schema": removal_schema}
         except Exception as e:
             return {
                 "messages": [
@@ -1022,15 +1061,33 @@ class _Patch:
             - The last ToolMessage contains the tool call to fix.
 
         """
-        msg = await self.bound.ainvoke(state.messages, config)
-        return self._tear_down(
-            msg, state.messages, state.tool_call_id, state.bump_attempt
+        try:
+            msg = await self.bound.ainvoke(state.messages, config)
+        except Exception:
+            return Command(goto="__end__")
+        return Command(
+            update=self._tear_down(
+                cast(AIMessage, msg),
+                state.messages,
+                state.tool_call_id,
+                state.bump_attempt,
+            ),
+            goto=("sync",),
         )
 
     def invoke(self, state: ExtendedExtractState, config: RunnableConfig) -> dict:
-        msg = self.bound.invoke(state.messages, config)
-        return self._tear_down(
-            cast(AIMessage, msg), state.messages, state.tool_call_id, state.bump_attempt
+        try:
+            msg = self.bound.invoke(state.messages, config)
+        except Exception:
+            return Command(goto="__end__")
+        return Command(
+            update=self._tear_down(
+                cast(AIMessage, msg),
+                state.messages,
+                state.tool_call_id,
+                state.bump_attempt,
+            ),
+            goto=("sync",),
         )
 
     def as_runnable(self):
@@ -1100,6 +1157,41 @@ class JsonPatch(BaseModel):
             ]
         }
     )
+
+
+def _create_remove_doc_from_existing(existing: Union[dict, list]):
+    if isinstance(existing, dict):
+        existing_ids = set(existing)
+    else:
+        existing_ids = set()
+        for schema_id, *_ in existing:
+            existing_ids.add(schema_id)
+    return _create_remove_doc_schema(tuple(sorted(existing_ids)))
+
+
+@functools.lru_cache(maxsize=10)
+def _create_remove_doc_schema(allowed_ids: tuple[str]) -> Type[BaseModel]:
+    """Create a RemoveDoc schema that validates against a set of allowed IDs."""
+
+    class RemoveDoc(BaseModel):
+        """Use this tool to remove (delete) a doc by its ID."""
+
+        json_doc_id: str = Field(
+            ...,
+            description=f"ID of the document to remove. Must be one of: {allowed_ids}",
+        )
+
+        @field_validator("json_doc_id")
+        @classmethod
+        def validate_doc_id(cls, v: str) -> str:
+            if v not in allowed_ids:
+                raise ValueError(
+                    f"Document ID '{v}' not found. Available IDs: {sorted(allowed_ids)}"
+                )
+            return v
+
+    RemoveDoc.__name__ = "RemoveDoc"
+    return RemoveDoc
 
 
 # Used for fixing validation errors
@@ -1212,11 +1304,14 @@ def _get_history_for_tool_call(messages: List[AnyMessage], tool_call_id: str):
             if not seen_ai_message:
                 tool_calls = [tc for tc in m.tool_calls if tc["id"] == tool_call_id]
                 if hasattr(m, "model_dump"):
-                    d = m.model_dump(exclude={"tool_calls"})
+                    d = m.model_dump(exclude={"tool_calls", "content"})
                 else:
-                    d = m.dict(exclude={"tool_calls"})
+                    d = m.dict(exclude={"tool_calls", "content"})
                 m = AIMessage(
                     **d,
+                    # Frequently have partial_json blocks that are
+                    # invalid if sent back to the API
+                    content=str(m.content),
                     tool_calls=tool_calls,
                 )
             seen_ai_message = True
@@ -1327,6 +1422,8 @@ def _get_message_op(
             for tc in m.tool_calls:
                 if tc["id"] == target_id:
                     if tool_call_name == "PatchFunctionName":
+                        if not tool_call.get("fixed_name"):
+                            continue
                         msg_ops.append(
                             {
                                 "op": "update_tool_name",
@@ -1339,7 +1436,7 @@ def _get_message_op(
                     elif tool_call_name in ("PatchFunctionErrors", "PatchDoc"):
                         try:
                             patched_args = jsonpatch.apply_patch(
-                                tc["args"], tool_call["patches"]
+                                tc["args"], _ensure_patches(tool_call)
                             )
                             msg_ops.append(
                                 {
@@ -1351,7 +1448,7 @@ def _get_message_op(
                                     },
                                 }
                             )
-                        except jsonpatch.JsonPatchConflict as e:
+                        except (jsonpatch.JsonPatchConflict, JSONDecodeError) as e:
                             if rt:
                                 rt.error = f"Could not apply patch: {repr(e)}"
                             logger.error(f"Could not apply patch: {repr(e)}")
@@ -1414,13 +1511,23 @@ class DeletionState(ExtractionState):
 
 
 class _ExtendedValidationNode(ValidationNode):
+    def __init__(self, *args, enable_deletes: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enable_deletes = enable_deletes
+
     def _func(self, input: ExtractionState, config: RunnableConfig) -> Any:  # type: ignore
         """Validate and run tool calls synchronously."""
         output_type, message = self._get_message(asdict(input))
+        removal_schema = None
+        if self.enable_deletes and input.existing:
+            removal_schema = _create_remove_doc_from_existing(input.existing)
 
         def run_one(call: ToolCall):
             try:
-                schema = self.schemas_by_name[call["name"]]
+                if removal_schema and call["name"] == removal_schema.__name__:
+                    schema = removal_schema
+                else:
+                    schema = self.schemas_by_name[call["name"]]
                 output = schema.model_validate(call["args"])
                 return ToolMessage(
                     content=output.model_dump_json(),
@@ -1436,14 +1543,14 @@ class _ExtendedValidationNode(ValidationNode):
                     f" to fix json_doc_id=[{call['id']}].",
                     name=call["name"],
                     tool_call_id=cast(str, call["id"]),
-                    additional_kwargs={"is_error": True},
+                    status="error",
                 )
             except Exception as e:
                 return ToolMessage(
                     content=self._format_error(e, call, schema),
                     name=call["name"],
                     tool_call_id=cast(str, call["id"]),
-                    additional_kwargs={"is_error": True},
+                    status="error",
                 )
 
         with get_executor_for_config(config) as executor:
@@ -1493,6 +1600,42 @@ def _strip_injected(fn: Callable) -> Callable:
         if _is_injected_arg_type(p.annotation)
     ]
     return _curry(fn, **{k: None for k in injected})
+
+
+def _ensure_patches(args: dict) -> list[JsonPatch]:
+    patches = args.get("patches")
+    if isinstance(patches, list):
+        return patches
+
+    if isinstance(patches, str):
+        try:
+            parsed = json.loads(patches)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+
+        bracket_depth = 0
+        first_list_str = None
+        start = patches.find("[")
+        if start != -1:
+            for i in range(start, len(patches)):
+                if patches[i] == "[":
+                    bracket_depth += 1
+                elif patches[i] == "]":
+                    bracket_depth -= 1
+                    if bracket_depth == 0:
+                        first_list_str = patches[start : i + 1]
+                        break
+            if first_list_str:
+                try:
+                    parsed = json.loads(first_list_str)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+
+    return []
 
 
 __all__ = [

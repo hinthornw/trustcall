@@ -32,6 +32,7 @@ class FakeExtractionModel(SimpleChatModel):
     backup_responses: List[AIMessage] = []
     i: int = 0
     bound_count: int = 0
+    bound: Optional["FakeExtractionModel"] = None
     tools: list = []
 
     def _call(
@@ -78,6 +79,7 @@ class FakeExtractionModel(SimpleChatModel):
             backup_responses=backup_responses,
             tools=tools,
             i=self.i,
+            bound=self,
             **kwargs,
         )
 
@@ -651,3 +653,59 @@ async def test_e2e_existing_schema_policy_tuple_behavior(strict_mode):
     assert len(recognized_responses) == 1
     recognized_item = recognized_responses[0]
     assert recognized_item.notes == "updated notes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_inserts", [True, False])
+async def test_enable_deletes_flow(enable_inserts: bool) -> None:
+    class MySchema(BaseModel):
+        """Schema for recognized docs."""
+
+        data: str
+
+    existing_docs = [
+        ("Doc1", "MySchema", {"data": "contents of doc1"}),
+        ("Doc2", "MySchema", {"data": "contents of doc2"}),
+    ]
+
+    remove_doc_call_id = str(uuid.uuid4())
+    remove_message = AIMessage(
+        content="I want to remove Doc1",
+        tool_calls=[
+            {
+                "id": remove_doc_call_id,
+                "name": "RemoveDoc",  # This is recognized only if enable_deletes=True
+                "args": {"json_doc_id": "Doc1"},
+            }
+        ],
+    )
+
+    fake_llm = FakeExtractionModel(
+        responses=[remove_message], backup_responses=[remove_message] * 3
+    )
+
+    extractor = create_extractor(
+        llm=fake_llm,
+        tools=[MySchema],
+        enable_inserts=enable_inserts,
+        enable_deletes=True,
+    )
+
+    # Invoke the pipeline with some dummy "system" prompt and existing docs
+    result = await extractor.ainvoke(
+        {
+            "messages": [("system", "System instructions: handle doc removal.")],
+            "existing": existing_docs,
+        }
+    )
+
+    # The pipeline always returns final "messages" in result["messages"].
+    # Because "RemoveDoc" isn't a recognized schema in the final output,
+    # we won't see it among result["responses"] either way.
+    assert len(result["messages"]) == 1
+    final_ai_msg = result["messages"][0]
+    assert isinstance(final_ai_msg, AIMessage)
+
+    assert len(final_ai_msg.tool_calls) == 1
+    assert len(result["responses"]) == 1
+    assert result["responses"][0].__repr_name__() == "RemoveDoc"  # type: ignore

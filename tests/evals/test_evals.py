@@ -191,7 +191,7 @@ class MetricProcessor:
     "model_name",
     [
         "gpt-4o",
-        "gpt-4o-mini",
+        # "gpt-4o-mini",
         # "gpt-3.5-turbo",
         "claude-3-5-sonnet-20240620",
         # "accounts/fireworks/models/firefunction-v2",
