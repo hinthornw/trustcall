@@ -428,8 +428,8 @@ async def test_e2e_existing_schema_policy_behavior(strict_mode):
     class MyRecognizedSchema(BaseModel):
         """A recognized schema that the pipeline can handle."""
 
-        user_id: str
-        notes: str
+        user_id: str  # type: ignore
+        notes: str  # type: ignore
 
     # Our existing data includes 2 top-level keys: recognized, unknown
     existing_schemas = {
@@ -543,8 +543,8 @@ async def test_e2e_existing_schema_policy_tuple_behavior(strict_mode):
     class MyRecognizedSchema(BaseModel):
         """A recognized schema that the pipeline can handle."""
 
-        user_id: str
-        notes: str
+        user_id: str  # type: ignore
+        notes: str  # type: ignore
 
     existing_schemas = [
         (

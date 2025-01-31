@@ -664,7 +664,11 @@ class _ExtractUpdates:
         existing_schema_policy: bool | Literal["ignore"] = True,
     ):
         new_tools: list = [PatchDoc]
-        tool_choice = {"type": "function", "function": {"name": "PatchDoc"}} if not enable_deletes else "any"
+        tool_choice = (
+            {"type": "function", "function": {"name": "PatchDoc"}}
+            if not enable_deletes
+            else "any"
+        )
         if enable_inserts:  # Also let the LLM know that we can extract NEW schemas.
             tools_ = [
                 schema
@@ -1052,7 +1056,7 @@ class _Patch:
 
     async def ainvoke(
         self, state: ExtendedExtractState, config: RunnableConfig
-    ) -> dict:
+    ) -> Command[Literal["sync", "__end__"]]:
         """Generate a JSONPatch to correct the validation error and heal the tool call.
 
         Assumptions:
@@ -1075,7 +1079,9 @@ class _Patch:
             goto=("sync",),
         )
 
-    def invoke(self, state: ExtendedExtractState, config: RunnableConfig) -> dict:
+    def invoke(
+        self, state: ExtendedExtractState, config: RunnableConfig
+    ) -> Command[Literal["sync", "__end__"]]:
         try:
             msg = self.bound.invoke(state.messages, config)
         except Exception:
