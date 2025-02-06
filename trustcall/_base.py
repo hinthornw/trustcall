@@ -802,7 +802,7 @@ class _ExtractUpdates:
                             )
                         )
                         updated_docs[tc["id"]] = str(json_doc_id)
-                    except (jsonpatch.JsonPatchConflict, JSONDecodeError) as e:
+                    except Exception as e:
                         logger.error(f"Could not apply patch: {e}")
                         if rt:
                             rt.error = f"Could not apply patch: {repr(e)}"
@@ -1450,7 +1450,7 @@ def _get_message_op(
                                     },
                                 }
                             )
-                        except (jsonpatch.JsonPatchConflict, JSONDecodeError) as e:
+                        except Exception as e:
                             if rt:
                                 rt.error = f"Could not apply patch: {repr(e)}"
                             logger.error(f"Could not apply patch: {repr(e)}")
