@@ -124,7 +124,7 @@ def _get_tool_as(style: str) -> Any:
     elif style == "tool":
         return tool_
     elif style == "schema":
-        return tool_.args_schema.schema()  # type: ignore
+        return tool_.args_schema.model_json_schema()  # type: ignore
     elif style == "model":
         return tool_.args_schema
     elif style == "typeddict":
@@ -279,8 +279,8 @@ async def test_extraction_with_retries(
     assert msg.tool_calls[0]["args"] == expected
     tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
-    pred = res["responses"][0].dict()
-    expected_res = tool_.args_schema.validate(expected).dict()  # type: ignore
+    pred = res["responses"][0].model_dump()
+    expected_res = tool_.args_schema.model_validate(expected).model_dump()  # type: ignore
     if "injected" in style:
         expected_res["other_arg"] = "default"
         pred["other_arg"] = "default"
@@ -389,7 +389,10 @@ async def test_patch_existing(
     assert msg.tool_calls[0]["args"] == expected
     tool_: BaseTool = tool(my_cool_tool)  # type: ignore
     assert len(res["responses"]) == 1
-    assert res["responses"][0].dict() == tool_.args_schema.validate(expected).dict()  # type: ignore
+    assert (
+        res["responses"][0].model_dump()
+        == tool_.args_schema.model_validate(expected).model_dump()  # type: ignore
+    )  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -706,3 +709,18 @@ async def test_enable_deletes_flow(enable_inserts: bool) -> None:
     assert len(final_ai_msg.tool_calls) == 1
     assert len(result["responses"]) == 1
     assert result["responses"][0].__repr_name__() == "RemoveDoc"  # type: ignore
+
+
+def test_raises_on_nothing_enabled():
+    def foo() -> None:
+        """bar"""
+        ...
+
+    with pytest.raises(ValueError, match="At least one of"):
+        create_extractor(
+            llm="openai:foo",
+            tools=[foo],
+            enable_inserts=False,
+            enable_updates=False,
+            enable_deletes=False,
+        )

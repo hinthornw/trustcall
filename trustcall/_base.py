@@ -9,7 +9,6 @@ import logging
 import operator
 import uuid
 from dataclasses import asdict, dataclass, field
-from json import JSONDecodeError
 from typing import (
     Any,
     Callable,
@@ -128,6 +127,7 @@ def create_extractor(
     tools: Sequence[TOOL_T],
     tool_choice: Optional[str] = None,
     enable_inserts: bool = False,
+    enable_updates: bool = True,
     enable_deletes: bool = False,
     existing_schema_policy: bool | Literal["ignore"] = True,
 ) -> Runnable[InputsLike, ExtractionOutputs]:
@@ -147,6 +147,8 @@ def create_extractor(
             on the input messages. (default: None)
         enable_inserts (bool): Whether to allow the LLM to extract new schemas
             even if it receives existing schemas. (default: False)
+        enable_updates (bool): Whether to allow the LLM to update existing schemas
+            using the PatchDoc tool. (default: True)
         enable_deletes (bool): Whether to allow the LLM to delete existing schemas
             using the RemoveDoc tool. (default: False)
         existing_schema_policy (bool | Literal["ignore"]): How to handle existing schemas
@@ -313,6 +315,7 @@ def create_extractor(
         llm,
         tools=validator.schemas_by_name.copy(),
         enable_inserts=enable_inserts,  # type: ignore
+        enable_updates=enable_updates,  # type: ignore
         enable_deletes=enable_deletes,  # type: ignore
         existing_schema_policy=existing_schema_policy,
     )
@@ -660,10 +663,16 @@ class _ExtractUpdates:
         llm: BaseChatModel,
         tools: Mapping[str, Type[BaseModel]],
         enable_inserts: bool = False,
+        enable_updates: bool = True,
         enable_deletes: bool = False,
         existing_schema_policy: bool | Literal["ignore"] = True,
     ):
-        new_tools: list = [PatchDoc]
+        if not any((enable_inserts, enable_updates, enable_deletes)):
+            raise ValueError(
+                "At least one of enable_inserts, enable_updates,"
+                " or enable_deletes must be True."
+            )
+        new_tools: list = [PatchDoc] if enable_updates else []
         tool_choice = "PatchDoc" if not enable_deletes else "any"
         if enable_inserts:  # Also let the LLM know that we can extract NEW schemas.
             tools_ = [
@@ -674,6 +683,7 @@ class _ExtractUpdates:
             new_tools.extend(tools_)
             tool_choice = "any"
         self.enable_inserts = enable_inserts
+        self.enable_updates = enable_updates
         self.bound_tools = new_tools
         self.tool_choice = tool_choice
         self.bound = llm.bind_tools(new_tools, tool_choice=tool_choice)
@@ -792,16 +802,20 @@ class _ExtractUpdates:
 
                 if target:
                     try:
-                        resolved_tool_calls.append(
-                            ToolCall(
-                                id=tc["id"],
-                                name=tool_name,
-                                args=jsonpatch.apply_patch(
-                                    target, _ensure_patches(tc["args"])
-                                ),
+                        patches = _ensure_patches(tc["args"])
+                        if patches or self.tool_choice == "PatchDoc":
+                            # The second condition is so that, when we are continuously
+                            # updating a single doc, we will still include it in
+                            # the output responses list; mainly for backwards
+                            # compatibility
+                            resolved_tool_calls.append(
+                                ToolCall(
+                                    id=tc["id"],
+                                    name=tool_name,
+                                    args=jsonpatch.apply_patch(target, patches),
+                                )
                             )
-                        )
-                        updated_docs[tc["id"]] = str(json_doc_id)
+                            updated_docs[tc["id"]] = str(json_doc_id)
                     except Exception as e:
                         logger.error(f"Could not apply patch: {e}")
                         if rt:
@@ -1344,7 +1358,7 @@ def _apply_message_ops(
                         targ if tc["id"] == targ["id"] else tc for tc in m.tool_calls
                     ]
                     if old != new:
-                        m = m.copy()
+                        m = m.model_copy()
                         m.tool_calls = new
                         if m.additional_kwargs.get("tool_calls"):
                             m.additional_kwargs["tool_calls"] = new
@@ -1372,7 +1386,7 @@ def _apply_message_ops(
                         else:
                             new.append(tc)
                     if m.tool_calls != new:
-                        m = m.copy()
+                        m = m.model_copy()
                         m.tool_calls = new
                     messages_.append(m)
             messages = messages_
@@ -1437,19 +1451,21 @@ def _get_message_op(
                         )
                     elif tool_call_name in ("PatchFunctionErrors", "PatchDoc"):
                         try:
-                            patched_args = jsonpatch.apply_patch(
-                                tc["args"], _ensure_patches(tool_call)
-                            )
-                            msg_ops.append(
-                                {
-                                    "op": "update_tool_call",
-                                    "target": {
-                                        "id": target_id,
-                                        "name": tc["name"],
-                                        "args": patched_args,
-                                    },
-                                }
-                            )
+                            patches = _ensure_patches(tool_call)
+                            if patches:
+                                patched_args = jsonpatch.apply_patch(
+                                    tc["args"], patches
+                                )
+                                msg_ops.append(
+                                    {
+                                        "op": "update_tool_call",
+                                        "target": {
+                                            "id": target_id,
+                                            "name": tc["name"],
+                                            "args": patched_args,
+                                        },
+                                    }
+                                )
                         except Exception as e:
                             if rt:
                                 rt.error = f"Could not apply patch: {repr(e)}"
