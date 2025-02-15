@@ -502,7 +502,7 @@ No fields omitted, and the important new information is seamlessly integrated.
 
 ### Simultanous updates & insertions
 
-Both problems above (difficulty with type-safe generation of complex schemas & difficulty with generating the correct edits to existing schemas) are compounded when you have to be prompting the LLM to handle **both** updates **and** inserts, as is often the case when extracting mulptiple memory "events" from conversations.
+Both problems above (difficulty with type-safe generation of complex schemas & difficulty with generating the correct edits to existing schemas) are compounded when you have to be prompting the LLM to handle **both** updates **and** inserts, as is often the case when extracting multiple memory "events" from conversations.
 
 Let's see an example below. Suppose you are managing a list of "relationships":
 
@@ -665,7 +665,7 @@ First, install:
 pip install -U trustcall langchain-fireworks
 ```
 
-Then set up your schema:
+Then, set up your schema:
 
 ```python
 from typing import List
@@ -824,7 +824,7 @@ as well as providing support for `langchain-core`'s tools.
 
 We have a simple evaluation benchmark in [test_evals.py](./tests/evals/test_evals.py).
 
-To run, first clone the dataset
+To run, first clone the dataset:
 
 ```python
 from langsmith import Client
@@ -832,7 +832,7 @@ from langsmith import Client
 Client().clone_public_dataset("https://smith.langchain.com/public/0544c02f-9617-4095-bc15-3a9af1189819/d")
 ```
 
-Then run the evals:
+Then, run the evals:
 
 ```bash
 make evals
