@@ -226,13 +226,6 @@ class GeminiJsonPatch(BasePatch):
     Note that the op and path are ALWAYS required. Value is required for ALL operations except 'remove'.
     This supports Gemini with it's more limited JSON compatibility.
     """ # noqa
-    # Similar to JsonPatch but with Gemini-compatible schema definition
-    # Instead of using a string-only value, use Union types that match Gemini's schema
-    value: Optional[Union[str, int, float, bool, List, Dict]] = Field(
-        default=None,
-        description="The value to be used within the operation. Required for"
-        " 'add' and 'replace' operations, not needed for 'remove'."
-    )
     
     # For Gemini, we'll use a string value but with clear documentation that it can be complex
     value: Optional[str] = Field(
@@ -276,7 +269,8 @@ class GeminiJsonPatch(BasePatch):
                 },
                 "value": {
                     "type": "STRING",
-                    "description": "Value to use in the operation. For complex values, use JSON strings."
+                    "description": "The value to be used within the operation. For complex values (objects, arrays), "
+                                   "provide valid JSON as a string. Required for 'add' and 'replace' operations."
                 }
             },
             "required": ["op", "path"]
