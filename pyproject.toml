@@ -8,9 +8,10 @@ dependencies = [
     "langgraph>=0.2.25",
     "dydantic<1.0.0,>=0.0.8",
     "jsonpatch<2.0,>=1.33",
+    "langgraph-prebuilt>=0.1.2",
 ]
 name = "trustcall"
-version = "0.0.37"
+version = "0.0.38"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 readme = "README.md"
 
@@ -75,3 +76,21 @@ trustcall = { workspace = true }
 now = true
 delay = 3
 patterns = ["*.py"]
+
+[tool.hatch.build]
+exclude = [
+    "tests/",
+    "docs/",
+    ".github/",
+    "examples.py",
+    "examples/",
+    ".editorconfig",
+    "db/",
+    "evals/",
+    ".langgraph_api",
+    "*.ipynb",
+    ".python-version",
+    ".editorconfig",
+    ".venv*/**",
+    "pytest.ini",
+]
