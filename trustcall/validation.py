@@ -35,40 +35,28 @@ class _ExtendedValidationNode(ValidationNode):
             
         # ADDED: Get the current attempt count from the state
         attempt_count = input.attempts if hasattr(input, 'attempts') else 1
-        logger.debug(f"Current validation attempt: {attempt_count}")
 
         def run_one(call: ToolCall): # type: ignore
-            logger.debug(f"Validating tool call: {call['name']} with args: {call['args']}")
             try:
                 if removal_schema and call["name"] == removal_schema.__name__:
                     schema = removal_schema
-                    logger.debug(f"Using removal schema: {removal_schema.__name__}")
                 else:
                     schema = self.schemas_by_name[call["name"]]
-                    logger.debug(f"Using schema: {call['name']}")
-                
                 try:
                     # ADDED: Create validation context with attempt count
                     validation_context = {"attempt_count": attempt_count}
-                    logger.debug(f"Created validation context: {validation_context}")
-                    
                     # MODIFIED: Pass context to model_validate
                     output = schema.model_validate(call["args"], context=validation_context)
-                    logger.debug(f"Validation successful: {output}")
-                    # output = schema.model_validate(call["args"])
                     return ToolMessage(
                         content=output.model_dump_json(),
                         name=call["name"],
                         tool_call_id=cast(str, call["id"]),
                     )
                 except Exception as validation_error:
-                    # Add detailed logging about validation failures
-                    logger.debug(f"Validation error in schema {call['name']}: {str(validation_error)}")
                     raise validation_error
 
             except KeyError:
                 valid_names = ", ".join(self.schemas_by_name.keys())
-                logger.debug(f"Unknown tool name: {call['name']}. Valid names: {valid_names}")
                 return ToolMessage(
                     content=f'Unrecognized tool name: "{call["name"]}". You only have'
                     f" access to the following tools: {valid_names}."
@@ -79,9 +67,7 @@ class _ExtendedValidationNode(ValidationNode):
                     status="error",
                 )
             except Exception as e:
-                logger.debug(f"Exception during validation: {type(e).__name__}: {str(e)}")
                 error_message = self._format_error(e, call, schema)
-                logger.debug(f"Formatted error message: {error_message}")
                 return ToolMessage(
                     content=error_message,
                     name=call["name"],
