@@ -755,27 +755,35 @@ def create_extractor(
     builder.add_edge("extract", "validate")
     builder.add_conditional_edges("extract_updates", validate_or_retry)
 
-    def handle_retries(
-        state: ExtractionState, config: RunnableConfig
-    ) -> Union[Literal["__end__"], list]:
+    def handle_retries(state: ExtractionState, config: RunnableConfig) -> Union[Literal["__end__"], list]:
         """After validation, decide whether to retry or end the process."""
         max_attempts = config["configurable"].get("max_attempts", DEFAULT_MAX_ATTEMPTS)
         if state.attempts >= max_attempts:
             return "__end__"
         # Only continue if we need to patch the tool call
         to_send = []
-        # We only increment the attempt count once, regardless of the fan-out
-        # degree.
         bumped = False
+        
+        # Add defensive check - ensure there's at least one AIMessage in history
+        has_ai_message = any(isinstance(m, AIMessage) for m in state.messages)
+        if not has_ai_message:
+            logger.warning("No AIMessage found in state.messages, ending processing")
+            return "__end__"
+            
         for m in reversed(state.messages):
             if isinstance(m, AIMessage):
                 break
             if isinstance(m, ToolMessage):
                 if m.status == "error":
-                    # Each fallback will fix at most 1 schema per time.
                     messages_for_fixing = _get_history_for_tool_call(
                         state.messages, m.tool_call_id
                     )
+                    
+                    # Ensure tool_call_id is properly set
+                    if not hasattr(m, "tool_call_id") or not m.tool_call_id:
+                        logger.warning(f"Missing tool_call_id on message {m}, skipping")
+                        continue
+                        
                     to_send.append(
                         Send(
                             "patch",
@@ -791,6 +799,10 @@ def create_extractor(
                     )
                     bumped = True
                 else:
+                    # Safe deletion handling
+                    if not hasattr(m, "id") or not m.id:
+                        logger.warning(f"Missing id on message {m}, skipping deletion")
+                        continue
                     # We want to delete the validation tool calls
                     # anyway to avoid mixing branches during fan-in
                     to_send.append(
