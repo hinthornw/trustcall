@@ -22,6 +22,8 @@ from trustcall._base import (
     _ExtractUpdates,
     create_extractor,
     ensure_tools,
+    AsyncGemini,
+    GeminiChatCompletionsModel,
 )
 
 
@@ -724,3 +726,36 @@ def test_raises_on_nothing_enabled():
             enable_updates=False,
             enable_deletes=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_async_gemini():
+    gemini_client = AsyncGemini(api_key="test_api_key")
+    model = GeminiChatCompletionsModel(model="gemini-2.0-flash", gemini_client=gemini_client)
+
+    prompt = "Hello, how are you?"
+    response = await model.complete(prompt)
+
+    assert isinstance(response, str)
+    assert response == "Expected response from Gemini API"
+
+
+@pytest.mark.asyncio
+async def test_create_extractor_with_gemini():
+    gemini_client = AsyncGemini(api_key="test_api_key")
+    model = GeminiChatCompletionsModel(model="gemini-2.0-flash", gemini_client=gemini_client)
+
+    extractor = create_extractor(model, tools=[MyNestedSchema])
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "You are a botly bot."),
+            ("user", "I am a user with needs."),
+        ]
+    )
+
+    inputs = prompt.invoke({}).to_messages()
+    res = await extractor.ainvoke(inputs)
+
+    assert len(res["messages"]) == 1
+    assert isinstance(res["messages"][0], AIMessage)

@@ -350,8 +350,6 @@ def create_extractor(
     def handle_retries(
         state: ExtractionState, config: RunnableConfig
     ) -> Union[Literal["__end__"], list]:
-        """After validation, decide whether to retry or end the process."""
-        max_attempts = config["configurable"].get("max_attempts", DEFAULT_MAX_ATTEMPTS)
         if state.attempts >= max_attempts:
             return "__end__"
         # Only continue if we need to patch the tool call
@@ -1656,9 +1654,40 @@ def _ensure_patches(args: dict) -> list[JsonPatch]:
     return []
 
 
+class AsyncGemini:
+    def __init__(self, api_key: str, base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"):
+        self.api_key = api_key
+        self.base_url = base_url
+
+    async def request(self, endpoint: str, payload: dict) -> dict:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.base_url}{endpoint}", json=payload, headers=headers) as response:
+                response.raise_for_status()
+                return await response.json()
+
+
+class GeminiChatCompletionsModel(BaseModel):
+    model: str
+    gemini_client: AsyncGemini
+
+    async def complete(self, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+        }
+        response = await self.gemini_client.request("completions", payload)
+        return response["choices"][0]["text"]
+
+
 __all__ = [
     "create_extractor",
     "ensure_tools",
     "ExtractionInputs",
     "ExtractionOutputs",
+    "AsyncGemini",
+    "GeminiChatCompletionsModel",
 ]

@@ -9,6 +9,8 @@ dependencies = [
     "dydantic<1.0.0,>=0.0.8",
     "jsonpatch<2.0,>=1.33",
     "langgraph-prebuilt>=0.1.2",
+    "google-auth (>=2.38.0,<3.0.0)",
+    "google-api-python-client (>=2.164.0,<3.0.0)",
 ]
 name = "trustcall"
 version = "0.0.38"
