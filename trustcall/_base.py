@@ -1389,6 +1389,8 @@ def _apply_message_ops(
                         m = m.model_copy()
                         m.tool_calls = new
                     messages_.append(m)
+                else:
+                    messages_.append(m)
             messages = messages_
 
         else:
