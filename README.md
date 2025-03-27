@@ -310,7 +310,8 @@ Alex: It's going well! I've been cooking almost every day now. I'd say I've beco
 
 
 # Naive approach
-bound = llm.with_structured_output(User)
+bound = llm.bind_tools([User], 
+                        tool_choice="User")
 naive_result = bound.invoke(
     f"""Update the memory (JSON doc) to incorporate new information from the following conversation:
 <user_info>
@@ -486,9 +487,11 @@ Output:
 
 No fields omitted, and the important new information is seamlessly integrated.
 
-### Simultanous updates & insertions
+### Simultaneous generation & updating
 
-Both problems above (difficulty with type-safe generation of complex schemas & difficulty with generating the correct edits to existing schemas) are compounded when you have to be prompting the LLM to handle **both** updates **and** inserts, as is often the case when extracting multiple memory "events" from conversations.
+Both problems above (difficulty with type-safe generation of complex schemas & difficulty with updating existing schemas) are compounded when you want the LLM to handle **both** updates **and** inserts.
+
+This is often the case when extracting things like multiple memory "events" from conversations.
 
 Let's see an example below. Suppose you are managing a list of "relationships":
 
