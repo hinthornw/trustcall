@@ -101,7 +101,7 @@ def score_run(run: Run, example: Example) -> dict:  # type: ignore
             ]
         )
         return {"results": results}
-    schema = create_model_from_schema(example.inputs["tool_def"]["parameters"])
+    schema = create_model_from_schema(example.inputs["tool_def"]["parameters"])  # type: ignore
     try:
         schema.model_validate(predicted)
         results.append(

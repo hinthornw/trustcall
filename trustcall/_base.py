@@ -25,6 +25,7 @@ from typing import (
 )
 
 import jsonpatch  # type: ignore[import-untyped]
+import jsonpointer  # type: ignore[import-untyped]
 import langsmith as ls
 from dydantic import create_model_from_schema
 from langchain_core.language_models import BaseChatModel
@@ -40,10 +41,10 @@ from langchain_core.messages import (
 )
 from langchain_core.prompt_values import PromptValue
 from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables.config import get_executor_for_config
 from langchain_core.tools import BaseTool, InjectedToolArg, create_schema_from_function
 from langgraph.constants import Send
 from langgraph.graph import StateGraph, add_messages
-from langgraph.prebuilt.tool_validator import ValidationNode, get_executor_for_config
 from langgraph.types import Command
 from langgraph.utils.runnable import RunnableCallable
 from pydantic import (
@@ -57,6 +58,8 @@ from pydantic import (
     field_validator,
 )
 from typing_extensions import Annotated, TypedDict, get_args, get_origin, is_typeddict
+
+from trustcall._validation_node import ValidationNode
 
 logger = logging.getLogger("extraction")
 
@@ -812,7 +815,7 @@ class _ExtractUpdates:
                                 ToolCall(
                                     id=tc["id"],
                                     name=tool_name,
-                                    args=jsonpatch.apply_patch(target, patches),
+                                    args=_apply_patch(target, patches),
                                 )
                             )
                             updated_docs[tc["id"]] = str(json_doc_id)
@@ -1221,11 +1224,12 @@ class PatchFunctionErrors(BaseModel):
 
     json_doc_id: str = Field(
         ...,
-        description="The ID of the function you are patching.",
+        description="First, identify the json_doc_id of the function you are patching.",
     )
     planned_edits: str = Field(
         ...,
-        description="Write a bullet-point list of each ValidationError you encountered"
+        description="Second, write a bullet-point list of each ValidationError "
+        "you encountered"
         " and the corresponding JSONPatch operation needed to heal it."
         " For each operation, write why your initial guess was incorrect, "
         " citing the corresponding types(s) from the JSONSchema"
@@ -1234,8 +1238,8 @@ class PatchFunctionErrors(BaseModel):
     )
     patches: list[JsonPatch] = Field(
         ...,
-        description="A list of JSONPatch operations to be applied to the"
-        " previous tool call's response arguments. If none are required, return"
+        description="Finally, provide a list of JSONPatch operations to be applied to"
+        " the previous tool call's response arguments. If none are required, return"
         " an empty list. This field is REQUIRED."
         " Multiple patches in the list are applied sequentially in the order provided,"
         " with each patch building upon the result of the previous one.",
@@ -1254,17 +1258,19 @@ def _create_patch_function_name_schema(valid_tool_names: Optional[List[str]] = N
 
         json_doc_id: str = Field(
             ...,
-            description="The ID of the function you are patching.",
+            description="First, identify the json_doc_id of the function"
+            " you are patching.",
         )
         reasoning: list[str] = Field(
             ...,
-            description="At least 2 logical reasons why this action ought to be taken."
+            description="Seconds, provide at least 2 logical reasons why this"
+            " action ought to be taken."
             "Cite the specific error(s) mentioned to motivate the fix.",
         )
         fixed_name: Optional[str] = Field(
             ...,
-            description="If you need to change the name of the function (e.g., "
-            f'from an "Unrecognized tool name" error), do so here.{vname}',
+            description="Finally, if you need to change the name of the function (e.g.,"
+            f' from an "Unrecognized tool name" error), do so here.{vname}',
         )
 
     return PatchFunctionName
@@ -1276,11 +1282,11 @@ class PatchDoc(BaseModel):
 
     json_doc_id: str = Field(
         ...,
-        description="The json_doc_id of the document you are patching.",
+        description="First, identify the json_doc_id of the document you are patching.",
     )
     planned_edits: str = Field(
         ...,
-        description="Think step-by-step, reasoning over each required"
+        description="Seconds, think step-by-step, reasoning over each required"
         " update and the corresponding JSONPatch operation to accomplish it."
         " Cite the fields in the JSONSchema you referenced in developing this plan."
         " Address each path as a group; don't switch between paths.\n"
@@ -1294,8 +1300,8 @@ class PatchDoc(BaseModel):
     )
     patches: list[JsonPatch] = Field(
         ...,
-        description="A list of JSONPatch operations to be applied to the"
-        " previous tool call's response arguments. If none are required, return"
+        description="Finally, provide a list of JSONPatch operations to be applied to"
+        " the previous tool call's response arguments. If none are required, return"
         " an empty list. This field is REQUIRED."
         " Multiple patches in the list are applied sequentially in the order provided,"
         " with each patch building upon the result of the previous one."
@@ -1453,9 +1459,7 @@ def _get_message_op(
                         try:
                             patches = _ensure_patches(tool_call)
                             if patches:
-                                patched_args = jsonpatch.apply_patch(
-                                    tc["args"], patches
-                                )
+                                patched_args = _apply_patch(tc["args"], patches)
                                 msg_ops.append(
                                     {
                                         "op": "update_tool_call",
@@ -1620,7 +1624,7 @@ def _strip_injected(fn: Callable) -> Callable:
     return _curry(fn, **{k: None for k in injected})
 
 
-def _ensure_patches(args: dict) -> list[JsonPatch]:
+def _ensure_patches(args: dict) -> list[jsonpatch.JsonPatch]:
     patches = args.get("patches")
     if isinstance(patches, list):
         return patches
@@ -1654,6 +1658,44 @@ def _ensure_patches(args: dict) -> list[JsonPatch]:
                     pass
 
     return []
+
+
+def _fix_string_concat(
+    doc: dict, patch: list[jsonpatch.JsonPatch]
+) -> Optional[list[jsonpatch.JsonPatch]] | None:
+    fixed = False
+    result = []
+    for p in patch:
+        if p["path"] and p["path"].endswith("/-"):
+            new_path = p["path"][:-2]
+            pointer = jsonpointer.JsonPointer(new_path)
+            existing = pointer.resolve(doc)
+            if existing is not None and isinstance(existing, str):
+                fixed = True
+                result.append(
+                    {
+                        "path": new_path,
+                        "op": "replace",
+                        "value": existing + p["value"],
+                    }
+                )
+            else:
+                result.append(p)
+        else:
+            result.append(p)
+    if not fixed:
+        return None
+    return result
+
+
+def _apply_patch(doc: dict, patches: list[jsonpatch.JsonPatch]) -> dict:
+    try:
+        return jsonpatch.apply_patch(doc, patches)
+    except jsonpatch.JsonPatchConflict:
+        fixed = _fix_string_concat(doc, patches)
+        if fixed is not None:
+            return jsonpatch.apply_patch(doc, fixed)
+        raise
 
 
 __all__ = [
