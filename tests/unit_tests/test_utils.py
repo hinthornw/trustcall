@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 from typing_extensions import Annotated, TypedDict
 
-from trustcall._base import _convert_any_typed_dicts_to_pydantic
+from trustcall._base import _apply_patch, _convert_any_typed_dicts_to_pydantic
 
 
 def test_convert_any_typed_dicts_to_pydantic():
@@ -89,3 +89,28 @@ def test_recursive_typed_dict_conversion():
     cyclic["next"] = cyclic
     with pytest.raises(ValueError):  # or RecursionError, depending on implementation
         model(**cyclic)
+
+
+@pytest.mark.parametrize(
+    "doc,patches,expected",
+    [
+        ({"a": 1}, [{"op": "add", "path": "/b", "value": 2}], {"a": 1, "b": 2}),
+        ({"a": 1}, [{"op": "remove", "path": "/a"}], {}),
+        ({"a": 1}, [{"op": "replace", "path": "/a", "value": 2}], {"a": 2}),
+        # Expanded syntax of concatenation for strings (similar to arrays)
+        (
+            {"a": {"b": "hello"}},
+            [{"op": "add", "path": "/a/b/-", "value": " world"}],
+            {"a": {"b": "hello world"}},
+        ),
+        # Similar, but within nested list/dict/etc.
+        (
+            {"a": [{"b": "foo"}, {"b": {"c": "hello"}}]},
+            [{"op": "add", "path": "/a/1/b/c/-", "value": " world"}],
+            {"a": [{"b": "foo"}, {"b": {"c": "hello world"}}]},
+        ),
+    ],
+)
+def test_apply_patch_concat(doc, patches, expected):
+    result = _apply_patch(doc, patches)
+    assert result == expected

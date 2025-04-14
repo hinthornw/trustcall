@@ -7,11 +7,10 @@ requires-python = "<4.0,>=3.10"
 dependencies = [
     "langgraph>=0.2.25",
     "dydantic<1.0.0,>=0.0.8",
-    "jsonpatch<2.0,>=1.33",
-    "langgraph-prebuilt>=0.1.2",
+    "jsonpatch<2.0,>=1.33"
 ]
 name = "trustcall"
-version = "0.0.38"
+version = "0.0.39"
 description = "Tenacious & trustworthy tool calling built on LangGraph."
 readme = "README.md"
 
@@ -20,7 +19,7 @@ readme = "README.md"
 dev = [
     "ruff<1.0.0,>=0.4.10",
     "mypy<2.0.0,>=1.10.1",
-    "pytest<9.0.0,>=8.2.2",
+    "pytest>=8.2.2,<9.0.0",
     "pytest-socket<1.0.0,>=0.7.0",
     "langchain<1.0,>=0.3",
     "langchain-openai<1.0,>=0.2",

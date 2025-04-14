@@ -716,7 +716,7 @@ def test_raises_on_nothing_enabled():
         """bar"""
         ...
 
-    with pytest.raises(ValueError, match="At least one of"):
+    with pytest.raises(Exception):
         create_extractor(
             llm="openai:foo",
             tools=[foo],

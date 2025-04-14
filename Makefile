@@ -4,7 +4,7 @@ tests:
 	uv run python -m pytest --disable-socket --allow-unix-socket -vv --durations=10 tests/unit_tests
 
 tests_watch:
-	uv run ptw --now . -- -vv -x  tests/unit_tests
+	uv run --with-editable . ptw . -- -vv -x --ff tests/unit_tests
 
 integration_tests:
 	uv run python -m pytest -v --durations=10 --cov=trustcall --cov-report=term-missing --cov-report=html --cov-config=.coveragerc tests/integration_tests
