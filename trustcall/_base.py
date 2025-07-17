@@ -454,7 +454,8 @@ def create_extractor(
                 if json_doc_id and existing:
                     # This is a patched tool call, try to find the original schema
                     if isinstance(existing, dict) and str(json_doc_id) in existing:
-                        # For dict-based existing schemas, the json_doc_id is the schema name
+                        # For dict-based existing schemas, the json_doc_id is the
+                        # schema name
                         original_schema_name = str(json_doc_id)
                         if original_schema_name in validator.schemas_by_name:
                             sch = validator.schemas_by_name[original_schema_name]
@@ -1726,3 +1727,4 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
+
