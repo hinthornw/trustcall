@@ -97,8 +97,8 @@ def extract_tool_info(tool_calls, schema_name):
     for change in changes:
         if change['type'] == 'update':
             result_parts.append(
-                f"Document {change['doc_id']} updated:
-                f"Plan: {change['planned_edits']}
+                f"Document {change['doc_id']} updated:\n"
+                f"Plan: {change['planned_edits']}\n"
                 f"Added content: {change['value']}"
             )
         else:
@@ -464,4 +464,5 @@ not a limitation of the trustcall library itself.
 
 if __name__ == "__main__":
     main()
+
 
