@@ -93,13 +93,14 @@ Take the following example:
         pertinent_user_preferences: UserPreferences
 
 </details>
-    If you naively extract these values using `gpt-4o`, it's prone to failure:
+    If you naively extract these values using tool calling with many LLMs, such as `gpt-4o` (with `tool_choice` set to `TelegramAndTrustFallPreferences` to [enforce the use of the tool call](https://platform.openai.com/docs/guides/function-calling?api-mode=responses#additional-configurations)), it's prone to failure:
 
 ```python
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(model="gpt-4o")
-bound = llm.with_structured_output(TelegramAndTrustFallPreferences)
+bound = llm.bind_tools([TelegramAndTrustFallPreferences], 
+                        tool_choice="TelegramAndTrustFallPreferences")
 
 conversation = """Operator: How may I assist with your telegram, sir?
 Customer: I need to send a message about our trust fall exercise.
@@ -122,21 +123,6 @@ ValidationError: 1 validation error for TelegramAndTrustFallPreferences
 pertinent_user_preferences.communication_preferences.semaphore
   Input should be a valid dictionary or instance of Semaphore [type=model_type, input_value=None, input_type=NoneType]
     For further information visit https://errors.pydantic.dev/2.8/v/model_type
-```
-
-If you try to use **strict** mode or OpenAI's `json_schema`, it will give you an error as well, since their parser doesn't support the complex JSON schemas:
-
-```python
-bound = llm.bind_tools([TelegramAndTrustFallPreferences], strict=True, response_format=TelegramAndTrustFallPreferences)
-
-bound.invoke(f"""Extract the preferences from the following conversation:
-<convo>
-{conversation}
-</convo>""")
-```
-
-```text
-BadRequestError: Error code: 400 - {'error': {'message': "Invalid schema for function 'TelegramAndTrustFallPreferences': "}}
 ```
 
 With `trustcall`, this extraction task is easy.
@@ -324,7 +310,8 @@ Alex: It's going well! I've been cooking almost every day now. I'd say I've beco
 
 
 # Naive approach
-bound = llm.with_structured_output(User)
+bound = llm.bind_tools([User], 
+                        tool_choice="User")
 naive_result = bound.invoke(
     f"""Update the memory (JSON doc) to incorporate new information from the following conversation:
 <user_info>
@@ -500,9 +487,11 @@ Output:
 
 No fields omitted, and the important new information is seamlessly integrated.
 
-### Simultanous updates & insertions
+### Simultaneous generation & updating
 
-Both problems above (difficulty with type-safe generation of complex schemas & difficulty with generating the correct edits to existing schemas) are compounded when you have to be prompting the LLM to handle **both** updates **and** inserts, as is often the case when extracting multiple memory "events" from conversations.
+Both problems above (difficulty with type-safe generation of complex schemas & difficulty with updating existing schemas) are compounded when you want the LLM to handle **both** updates **and** inserts.
+
+This is often the case when extracting things like multiple memory "events" from conversations.
 
 Let's see an example below. Suppose you are managing a list of "relationships":
 
