@@ -407,10 +407,14 @@ def create_extractor(
 
     def validate_or_repatch(
         state: ExtractionState,
-    ) -> Literal["validate", "patch"]:
+    ) -> Literal["validate", "patch", "__end__"]:
         if state.messages[-1].type == "ai":
             return "validate"
-        return "patch"
+        # Only route to patch if the state has tool_call_id field (i.e., it's an ExtendedExtractState)
+        if hasattr(state, 'tool_call_id'):
+            return "patch"
+        # If no tool_call_id, end the process to avoid AttributeError
+        return "__end__"
 
     builder.add_node(sync)
 
@@ -1727,4 +1731,5 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
+
 
