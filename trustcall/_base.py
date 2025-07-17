@@ -449,9 +449,28 @@ def create_extractor(
             if removal_schema and tc["name"] == removal_schema.__name__:
                 sch = removal_schema
             elif tc["name"] not in validator.schemas_by_name:
-                if existing_schema_policy in (False, "ignore"):
-                    continue
-                sch = validator.schemas_by_name[tc["name"]]
+                # Check if this is a patched tool call from existing schemas
+                json_doc_id = updated_docs.get(tc["id"])
+                if json_doc_id and existing:
+                    # This is a patched tool call, try to find the original schema
+                    if isinstance(existing, dict) and str(json_doc_id) in existing:
+                        # For dict-based existing schemas, the json_doc_id is the schema name
+                        original_schema_name = str(json_doc_id)
+                        if original_schema_name in validator.schemas_by_name:
+                            sch = validator.schemas_by_name[original_schema_name]
+                        else:
+                            if existing_schema_policy in (False, "ignore"):
+                                continue
+                            sch = validator.schemas_by_name[tc["name"]]
+                    else:
+                        # For list-based existing schemas or unknown cases
+                        if existing_schema_policy in (False, "ignore"):
+                            continue
+                        sch = validator.schemas_by_name[tc["name"]]
+                else:
+                    if existing_schema_policy in (False, "ignore"):
+                        continue
+                    sch = validator.schemas_by_name[tc["name"]]
             else:
                 sch = validator.schemas_by_name[tc["name"]]
             try:
@@ -1704,3 +1723,4 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
+
