@@ -411,7 +411,7 @@ def create_extractor(
         if state.messages[-1].type == "ai":
             return "validate"
         # Only route to patch if the state has tool_call_id field (i.e., it's an ExtendedExtractState)
-        if hasattr(state, 'tool_call_id'):
+        if hasattr(state, "tool_call_id"):
             return "patch"
         # If no tool_call_id, end the process to avoid AttributeError
         return "__end__"
@@ -1581,7 +1581,7 @@ class _ExtendedValidationNode(ValidationNode):
 
         with get_executor_for_config(config) as executor:
             outputs = [*executor.map(run_one, message.tool_calls)]
-            
+
             # Handle invalid tool calls that don't appear in message.tool_calls
             # but are stored in additional_kwargs due to parsing failures
             if not message.tool_calls and message.additional_kwargs:
@@ -1592,7 +1592,7 @@ class _ExtendedValidationNode(ValidationNode):
                         call_id = invalid_call.get("id", "unknown")
                         function_info = invalid_call.get("function", {})
                         function_name = function_info.get("name", "unknown")
-                        
+
                         error_msg = ToolMessage(
                             content=f"Invalid tool call: {invalid_call.get('error', 'Malformed JSON or parsing error')}. "
                             f"Please use PatchFunctionErrors to fix all validation errors. "
@@ -1602,12 +1602,11 @@ class _ExtendedValidationNode(ValidationNode):
                             status="error",
                         )
                         outputs.append(error_msg)
-            
+
             if output_type == "list":
                 return outputs
             else:
                 return {"messages": outputs}
-
 
 
 def _is_injected_arg_type(type_: Type) -> bool:
@@ -1731,5 +1730,3 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
-
-

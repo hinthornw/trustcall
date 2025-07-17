@@ -728,17 +728,17 @@ def test_raises_on_nothing_enabled():
 
 async def test_invalid_tool_call_handling():
     """Test that invalid tool calls in additional_kwargs are handled gracefully.
-    
+
     This reproduces the issue where LLM returns invalid tool calls (e.g., due to token limits)
     that result in empty tool_calls array but invalid tool call info in additional_kwargs.
     Without proper handling, this would cause AttributeError: 'ExtractionState' object has no attribute 'tool_call_id'.
     """
-    
+
     # Create a simple schema for testing
     class TestSchema(BaseModel):
         name: str
         value: int
-    
+
     # Create an AIMessage that simulates the invalid tool call scenario from the JSON file
     # This mimics what happens when LLM hits token limits and returns malformed JSON
     invalid_tool_call_message = AIMessage(
@@ -750,22 +750,22 @@ async def test_invalid_tool_call_handling():
                     "id": "call_invalid_test_123",
                     "function": {
                         "name": "TestSchema",
-                        "arguments": '{"name": "test", "value": "invalid_json_here...'  # Malformed JSON
+                        "arguments": '{"name": "test", "value": "invalid_json_here...',  # Malformed JSON
                     },
                     "type": "invalid_tool_call",  # This indicates parsing failure
-                    "error": "Unterminated string starting at: line 1 column 64 (char 63)"
+                    "error": "Unterminated string starting at: line 1 column 64 (char 63)",
                 }
             ],
-            "finish_reason": "length"  # Indicates token limit was hit
-        }
+            "finish_reason": "length",  # Indicates token limit was hit
+        },
     )
-    
+
     # Create a fake LLM that returns the invalid tool call message
     fake_llm = FakeExtractionModel(
         responses=[invalid_tool_call_message],
-        backup_responses=[invalid_tool_call_message] * 3
+        backup_responses=[invalid_tool_call_message] * 3,
     )
-    
+
     # Create extractor with the test schema
     extractor = create_extractor(
         llm=fake_llm,
@@ -773,12 +773,11 @@ async def test_invalid_tool_call_handling():
         enable_inserts=True,
         enable_updates=True,
     )
-    
+
     # This should not raise AttributeError: 'ExtractionState' object has no attribute 'tool_call_id'
     # Instead, it should handle the invalid tool call gracefully
     result = await extractor.ainvoke("Extract a test schema")
-    
+
     # The result should be empty since the tool call was invalid and couldn't be processed
     assert len(result["responses"]) == 0
     assert result["attempts"] > 0  # Should have attempted to process
-
