@@ -1577,10 +1577,33 @@ class _ExtendedValidationNode(ValidationNode):
 
         with get_executor_for_config(config) as executor:
             outputs = [*executor.map(run_one, message.tool_calls)]
+            
+            # Handle invalid tool calls that don't appear in message.tool_calls
+            # but are stored in additional_kwargs due to parsing failures
+            if not message.tool_calls and message.additional_kwargs:
+                invalid_tool_calls = message.additional_kwargs.get("tool_calls", [])
+                for invalid_call in invalid_tool_calls:
+                    if invalid_call.get("type") == "invalid_tool_call":
+                        # Create an error ToolMessage for the invalid tool call
+                        call_id = invalid_call.get("id", "unknown")
+                        function_info = invalid_call.get("function", {})
+                        function_name = function_info.get("name", "unknown")
+                        
+                        error_msg = ToolMessage(
+                            content=f"Invalid tool call: {invalid_call.get('error', 'Malformed JSON or parsing error')}. "
+                            f"Please use PatchFunctionErrors to fix all validation errors. "
+                            f"for json_doc_id=[{call_id}].",
+                            name=function_name,
+                            tool_call_id=call_id,
+                            status="error",
+                        )
+                        outputs.append(error_msg)
+            
             if output_type == "list":
                 return outputs
             else:
                 return {"messages": outputs}
+
 
 
 def _is_injected_arg_type(type_: Type) -> bool:
@@ -1704,3 +1727,4 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
+
