@@ -805,11 +805,14 @@ class _ExtractUpdates:
                             )
                     except StopIteration:
                         logger.error(
-                            f"Could not find existing schema in dict for {json_doc_id}"
+                            f"Could not find existing schema in list for json_doc_id '{json_doc_id}'. "
+                            f"Available schema IDs: {[e[0] for e in existing if len(e) >= 1]}"
                         )
                         if rt:
                             rt.error = (
-                                f"Could not find existing schema for {json_doc_id}"
+                                f"Could not find existing schema for json_doc_id '{json_doc_id}'. "
+                                f"Available schema IDs: {[e[0] for e in existing if len(e) >= 1]}. "
+                                f"Please ensure the json_doc_id matches one of the available schema IDs."
                             )
                         continue
                     except (ValueError, IndexError, TypeError):
@@ -1723,4 +1726,5 @@ __all__ = [
     "ExtractionInputs",
     "ExtractionOutputs",
 ]
+
 
