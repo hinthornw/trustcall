@@ -942,6 +942,8 @@ class _ExtractUpdates:
                     record_id, model = item
                     if hasattr(model, "__name__"):
                         schema_name = model.__name__
+                    elif isinstance(model, dict):
+                        schema_name = model.get("kind", "KnowledgeTriple")
                     else:
                         schema_name = model.__repr_name__()
 
