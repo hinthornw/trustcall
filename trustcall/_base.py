@@ -449,9 +449,29 @@ def create_extractor(
             if removal_schema and tc["name"] == removal_schema.__name__:
                 sch = removal_schema
             elif tc["name"] not in validator.schemas_by_name:
-                if existing_schema_policy in (False, "ignore"):
-                    continue
-                sch = validator.schemas_by_name[tc["name"]]
+                # Check if this is a patched tool call from existing schemas
+                json_doc_id = updated_docs.get(tc["id"])
+                if json_doc_id and existing:
+                    # This is a patched tool call, try to find the original schema
+                    if isinstance(existing, dict) and str(json_doc_id) in existing:
+                        # For dict-based existing schemas, the json_doc_id is the
+                        # schema name
+                        original_schema_name = str(json_doc_id)
+                        if original_schema_name in validator.schemas_by_name:
+                            sch = validator.schemas_by_name[original_schema_name]
+                        else:
+                            if existing_schema_policy in (False, "ignore"):
+                                continue
+                            sch = validator.schemas_by_name[tc["name"]]
+                    else:
+                        # For list-based existing schemas or unknown cases
+                        if existing_schema_policy in (False, "ignore"):
+                            continue
+                        sch = validator.schemas_by_name[tc["name"]]
+                else:
+                    if existing_schema_policy in (False, "ignore"):
+                        continue
+                    sch = validator.schemas_by_name[tc["name"]]
             else:
                 sch = validator.schemas_by_name[tc["name"]]
             try:
@@ -786,11 +806,14 @@ class _ExtractUpdates:
                             )
                     except StopIteration:
                         logger.error(
-                            f"Could not find existing schema in dict for {json_doc_id}"
-                        )
+                            f"Could not find existing schema in list for json_doc_id '{json_doc_id}'. "  # noqa: E501
+                            f"Available schema IDs: {[e[0] for e in existing if len(e) >= 1]}"  # noqa: E501
+			)
                         if rt:
                             rt.error = (
-                                f"Could not find existing schema for {json_doc_id}"
+                                f"Could not find existing schema for json_doc_id '{json_doc_id}'. "  # noqa: E501
+                                f"Available schema IDs: {[e[0] for e in existing if len(e) >= 1]}. "  # noqa: E501
+                                f"Please ensure the json_doc_id matches one of the available schema IDs."  # noqa: E501
                             )
                         continue
                     except (ValueError, IndexError, TypeError):
@@ -919,6 +942,8 @@ class _ExtractUpdates:
                     record_id, model = item
                     if hasattr(model, "__name__"):
                         schema_name = model.__name__
+                    elif isinstance(model, dict):
+                        schema_name = model.get("kind", "KnowledgeTriple")
                     else:
                         schema_name = model.__repr_name__()
 
