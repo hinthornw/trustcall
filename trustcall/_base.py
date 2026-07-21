@@ -829,8 +829,23 @@ class _ExtractUpdates:
                     logger.warning(f"Could not find existing schema for {tool_name}")
             else:
                 resolved_tool_calls.append(tc)
+        # Drop any tool_use content blocks whose tool call was filtered out above
+        # (e.g. a PatchDoc with empty patches or an unknown json_doc_id). Leaving a
+        # stale tool_use block in `content` with no matching tool_call/tool_result
+        # makes providers such as Anthropic/Bedrock reject the next turn with
+        # "Expected toolResult blocks for Ids: [...]".
+        resolved_ids = {tc["id"] for tc in resolved_tool_calls}
+        if isinstance(msg.content, list):
+            new_content = [
+                block
+                for block in msg.content
+                if not (isinstance(block, dict) and block.get("type") == "tool_use")
+                or block.get("id") in resolved_ids
+            ]
+        else:
+            new_content = msg.content
         ai_message = AIMessage(
-            content=msg.content,
+            content=new_content,
             tool_calls=resolved_tool_calls,
             additional_kwargs={"updated_docs": updated_docs},
         )
