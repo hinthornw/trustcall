@@ -724,3 +724,76 @@ def test_raises_on_nothing_enabled():
             enable_updates=False,
             enable_deletes=False,
         )
+
+
+def test_teardown_strips_stale_tool_use_blocks():
+    """When a PatchDoc is dropped (unknown json_doc_id / empty patches), its
+    tool_use content block must be dropped too.
+
+    Otherwise the message carries a tool_use block with no matching
+    tool_call/tool_result, and providers such as Anthropic/Bedrock reject the
+    next turn with "Expected toolResult blocks for Ids: [...]".
+    """
+
+    class KnownDoc(BaseModel):
+        notes: str  # type: ignore
+
+    existing = {"KnownDoc": {"notes": "orig"}}
+    known_id = str(uuid.uuid4())
+    unknown_id = str(uuid.uuid4())
+
+    msg = AIMessage(
+        content=[
+            {"type": "text", "text": "patching"},
+            {"type": "tool_use", "id": known_id, "name": "PatchDoc", "input": {}},
+            {"type": "tool_use", "id": unknown_id, "name": "PatchDoc", "input": {}},
+        ],
+        tool_calls=[
+            {
+                "id": known_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "KnownDoc",
+                    "planned_edits": "",
+                    "patches": [
+                        {"op": "replace", "path": "/notes", "value": "updated"}
+                    ],
+                },
+            },
+            {
+                "id": unknown_id,
+                "name": PatchDoc.__name__,
+                "args": {
+                    "json_doc_id": "DoesNotExist",
+                    "planned_edits": "",
+                    "patches": [{"op": "replace", "path": "/notes", "value": "x"}],
+                },
+            },
+        ],
+    )
+
+    extractor = _ExtractUpdates(
+        FakeExtractionModel(),
+        tools={"KnownDoc": KnownDoc},
+        existing_schema_policy=False,
+    )
+    final = extractor._teardown(msg, existing)["messages"][0]
+
+    # The unknown-doc PatchDoc is dropped from tool_calls...
+    tool_call_ids = {tc["id"] for tc in final.tool_calls}
+    assert known_id in tool_call_ids
+    assert unknown_id not in tool_call_ids
+
+    # ...and its tool_use content block is dropped too, while the surviving
+    # tool_use block and the text block are preserved.
+    assert isinstance(final.content, list)
+    tool_use_ids = {
+        block.get("id")
+        for block in final.content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    }
+    assert tool_use_ids == {known_id}
+    assert any(
+        isinstance(block, dict) and block.get("type") == "text"
+        for block in final.content
+    )
